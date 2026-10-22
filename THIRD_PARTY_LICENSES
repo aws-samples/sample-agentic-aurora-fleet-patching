@@ -1,0 +1,92 @@
+Aurora Fleet Patching Agent — Third-Party Licenses
+===================================================
+
+This project includes and/or depends on the third-party open-source software
+listed below. Each component is the property of its respective owners and is
+distributed under its own license. This file lists the direct dependencies of
+this project; each of those may in turn pull in transitive dependencies under
+compatible open-source licenses.
+
+Last reviewed: 2026-10-14
+
+
+Python — backend / API (bundled into the Lambda package)
+--------------------------------------------------------
+
+boto3
+  License: Apache License 2.0
+  https://github.com/boto/boto3
+
+botocore (transitive, via boto3)
+  License: Apache License 2.0
+  https://github.com/boto/botocore
+
+fastapi
+  License: MIT License
+  https://github.com/fastapi/fastapi
+
+starlette (transitive, via fastapi)
+  License: BSD 3-Clause License
+  https://github.com/encode/starlette
+
+pydantic
+  License: MIT License
+  https://github.com/pydantic/pydantic
+
+uvicorn
+  License: BSD 3-Clause License
+  https://github.com/encode/uvicorn
+
+mangum
+  License: MIT License
+  https://github.com/jordaneremieff/mangum
+
+psycopg2-binary
+  License: GNU Lesser General Public License (LGPL) with OpenSSL exception
+  https://github.com/psycopg/psycopg2
+
+
+Python — infrastructure (AWS CDK)
+---------------------------------
+
+aws-cdk-lib
+  License: Apache License 2.0
+  https://github.com/aws/aws-cdk
+
+constructs
+  License: Apache License 2.0
+  https://github.com/aws/constructs
+
+
+JavaScript — web UI
+-------------------
+
+react
+  License: MIT License
+  https://github.com/facebook/react
+
+react-dom
+  License: MIT License
+  https://github.com/facebook/react
+
+vite (build tool, dev dependency)
+  License: MIT License
+  https://github.com/vitejs/vite
+
+@vitejs/plugin-react (build tool, dev dependency)
+  License: MIT License
+  https://github.com/vitejs/vite-plugin-react
+
+
+Notes
+-----
+
+- This list covers direct dependencies declared in requirements.txt,
+  api/requirements.txt, cdk/requirements.txt, traffic-gen/requirements.txt,
+  and ui/package.json. Transitive dependencies are distributed under their own
+  licenses; a complete transitive manifest can be regenerated with `pip-licenses`
+  (Python) and `license-checker` (npm) against a built environment.
+- psycopg2-binary is distributed under the LGPL with an exception that permits
+  linking; it is used here as an unmodified, separately-installed library.
+- Full license texts for each component are available in that component's
+  source repository (linked above) and in the installed package metadata.

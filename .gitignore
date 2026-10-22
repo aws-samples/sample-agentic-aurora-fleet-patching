@@ -1,0 +1,57 @@
+# Local-only working material — never published.
+internal/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+ui/dist/
+
+# State
+.state.json
+
+# Lambda build artifact
+.lambda-build/
+cdk/cdk.out/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# CDK context (contains account-specific values and possibly credentials)
+cdk/cdk.json
+cdk/cdk.context.json
+
+# Deployment config (may contain secrets/account IDs)
+deploy-config.json
+
+# Generated SQL scripts (contain no secrets but are environment-specific)
+scripts/setup_iam_user.sql
+
+# Demo video intermediates (regenerate with scripts/build_demo_video.py)
+video-frames/build/
+
+# Claude/AI IDE settings (local)
+.claude/
+
+# Temporary Office files
+~$*
+
+# Demo assets (large binaries — not in source control)
+*.mp4
+*.pptx
+video-frames/

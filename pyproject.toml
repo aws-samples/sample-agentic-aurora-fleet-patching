@@ -1,0 +1,77 @@
+[project]
+name = "aurora-patch-agent"
+version = "1.0.0"
+description = "AI-powered Aurora PostgreSQL fleet patching agent"
+readme = "README.md"
+license = "MIT-0"
+requires-python = ">=3.12"
+authors = [
+    { name = "Amazon Web Services" },
+]
+keywords = ["aurora", "postgresql", "patching", "fleet-management", "aws", "bedrock"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database :: Database Engines/Servers",
+]
+
+dependencies = [
+    "boto3>=1.34.0",
+    "fastapi>=0.104.0",
+    "mangum>=0.17.0",
+    "pydantic>=2.5.0",
+    "psycopg2-binary>=2.9.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "moto[rds,dynamodb,sts,cloudwatch,sns]>=5.0.0",
+    "httpx>=0.25.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+    "boto3-stubs[rds,dynamodb,bedrock-runtime,cloudwatch,sns,sts]>=1.34.0",
+]
+cdk = [
+    "aws-cdk-lib>=2.150.0",
+    "constructs>=10.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "integration: marks tests as integration tests (require AWS credentials)",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B"]
+ignore = ["S101", "S104"]  # Allow assert in tests, allow binding to all interfaces
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*", "mangum.*", "psycopg2.*", "moto.*"]
+ignore_missing_imports = true
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["shared*", "agents*", "api*"]

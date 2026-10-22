@@ -1,0 +1,165 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Traffic Generator for Aurora PG clusters — sends environment-specific workload patterns
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where Aurora clusters live
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with access to Aurora clusters
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group allowing outbound to Aurora (port 5432)
+  ScheduleRate:
+    Type: String
+    Default: rate(15 minutes)
+    Description: How often to generate traffic
+
+Resources:
+  TrafficGenFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: aurora-patch-agent-traffic-gen
+      Handler: handler.handler
+      Runtime: python3.11
+      CodeUri: .
+      MemorySize: 512
+      Timeout: 300
+      # Bounds concurrent executions for this scheduled, single-purpose job so a
+      # burst of overlapping/retried invocations can't consume the account's
+      # shared concurrency pool.
+      ReservedConcurrentExecutions: 2
+      # Failed invocations (e.g. Aurora unreachable) land here instead of being
+      # silently dropped, so they can be inspected/alarmed on.
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt TrafficGenDLQ.Arn
+      Tags:
+        auto-delete: "no"
+        project: aurora-patch-agent
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref SecurityGroupId
+        SubnetIds: !Ref SubnetIds
+      Policies:
+        # rds:DescribeDBClusters is account-wide fleet discovery by design
+        # (this Lambda finds whatever Aurora clusters exist, not a fixed
+        # list known ahead of time) — RDS Describe/List actions don't
+        # support meaningful resource-level ARN scoping for that use case.
+        # rds:ListTagsForResource, unlike Describe, is called against a
+        # specific cluster ARN already returned by the discovery call
+        # above, so it's scoped to this account's RDS cluster ARNs rather
+        # than the account-independent '*' (matches the same pattern used
+        # in cdk/cross_account_role.yaml).
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - rds:DescribeDBClusters
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - rds:ListTagsForResource
+              Resource: !Sub 'arn:aws:rds:*:${AWS::AccountId}:cluster:*'
+      Events:
+        ScheduledTraffic:
+          Type: Schedule
+          Properties:
+            Schedule: !Ref ScheduleRate
+            Description: Periodic traffic generation
+            Enabled: true
+
+  TrafficGenDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: aurora-patch-agent-traffic-gen-dlq
+      MessageRetentionPeriod: 1209600 # 14 days
+      KmsMasterKeyId: !Ref TrafficGenLogKey
+      Tags:
+        - Key: auto-delete
+          Value: "no"
+        - Key: project
+          Value: aurora-patch-agent
+
+  TrafficGenLogKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: CMK for encrypting aurora-patch-agent-traffic-gen CloudWatch Logs and its DLQ
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowAccountAdmin
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          - Sid: AllowCloudWatchLogsEncryption
+            Effect: Allow
+            Principal:
+              Service: !Sub 'logs.${AWS::Region}.amazonaws.com'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              ArnLike:
+                'kms:EncryptionContext:aws:logs:arn': !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:*'
+          - Sid: AllowSqsEncryption
+            Effect: Allow
+            Principal:
+              Service: 'sqs.amazonaws.com'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+          - Sid: AllowLambdaDlqSend
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:ViaService': !Sub 'sqs.${AWS::Region}.amazonaws.com'
+      Tags:
+        - Key: auto-delete
+          Value: "no"
+        - Key: project
+          Value: aurora-patch-agent
+
+  TrafficGenLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${TrafficGenFunction}
+      RetentionInDays: 7
+      KmsKeyId: !GetAtt TrafficGenLogKey.Arn
+      Tags:
+        - Key: auto-delete
+          Value: "no"
+        - Key: project
+          Value: aurora-patch-agent
+
+Outputs:
+  FunctionArn:
+    Description: Traffic Generator Lambda ARN
+    Value: !GetAtt TrafficGenFunction.Arn
+  FunctionName:
+    Description: Traffic Generator Lambda Name
+    Value: !Ref TrafficGenFunction

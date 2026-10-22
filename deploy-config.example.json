@@ -1,0 +1,100 @@
+{
+  "_comment": "Aurora Patch Agent — Portable Deployment Configuration",
+  "_description": "Copy this file to deploy-config.json and customize for your environment.",
+
+  "agent": {
+    "version": "1.0.0",
+    "name": "aurora-patch-agent",
+    "description": "AI-powered Aurora PostgreSQL fleet patching agent",
+    "action_mode": "recommend",
+    "_action_mode_options": "recommend (default: agent suggests, user approves) | execute (agent acts on approved recommendations)"
+  },
+
+  "deployment": {
+    "region": "us-east-1",
+    "vpc_id": "vpc-xxxxxxxxx",
+    "subnet_ids": ["subnet-aaa", "subnet-bbb"],
+    "security_group_id": "sg-xxxxxxxxx",
+    "private_subnet_cidrs": ["10.0.200.0/24", "10.0.201.0/24"],
+    "deploy_infra": true
+  },
+
+  "scan": {
+    "regions": ["us-east-1", "us-east-2", "us-west-2"],
+    "schedule": "cron(0 6 ? * MON *)",
+    "enable_org_discovery": false
+  },
+
+  "multi_account": {
+    "_comment": "Configure target accounts for cross-account fleet scanning",
+    "enabled": false,
+    "role_name": "AuroraPatchAgentRole",
+    "accounts": [
+      {
+        "account_id": "111111111111",
+        "role_arn": "arn:aws:iam::111111111111:role/AuroraPatchAgentRole",
+        "regions": ["us-east-1", "us-west-2"],
+        "alias": "production",
+        "environment": "production",
+        "external_id": ""
+      },
+      {
+        "account_id": "222222222222",
+        "role_arn": "arn:aws:iam::222222222222:role/AuroraPatchAgentRole",
+        "regions": ["us-east-1"],
+        "alias": "staging",
+        "environment": "staging",
+        "external_id": ""
+      },
+      {
+        "account_id": "333333333333",
+        "role_arn": "arn:aws:iam::333333333333:role/AuroraPatchAgentRole",
+        "regions": ["us-east-1"],
+        "alias": "development",
+        "environment": "dev",
+        "external_id": ""
+      }
+    ]
+  },
+
+  "database_auth": {
+    "_comment": "How the Analyzer agent connects to Aurora clusters for metadata gathering",
+    "method": "iam",
+    "iam_user": "aurora_patch_agent",
+    "secret_arn": "",
+    "static_user": "",
+    "static_password": ""
+  },
+
+  "bedrock": {
+    "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "region": "",
+    "_comment": "Set region if Bedrock is not available in the deployment region"
+  },
+
+  "notifications": {
+    "sns_topic_arn": "",
+    "slack_webhook_url": "",
+    "approval_timeout_hours": 48
+  },
+
+  "rollout": {
+    "dev": { "auto_approve": true, "bake_time_hours": 0 },
+    "staging": { "auto_approve": true, "bake_time_hours": 24 },
+    "production_canary": { "auto_approve": true, "bake_time_hours": 4 },
+    "production_fleet": { "auto_approve": false, "bake_time_hours": 0 }
+  },
+
+  "health_thresholds": {
+    "p99_latency_regression_pct": 20,
+    "error_rate_max_pct": 1.0,
+    "replication_lag_max_ms": 500,
+    "connection_success_min_pct": 99.0
+  },
+
+  "security": {
+    "api_auth_token": "",
+    "allowed_origins": "",
+    "_comment": "Leave api_auth_token empty to disable auth (dev only)"
+  }
+}

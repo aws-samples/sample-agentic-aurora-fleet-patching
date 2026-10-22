@@ -1,0 +1,223 @@
+<mxfile host="app.diagrams.net" modified="2026-08-06T00:00:00.000Z" agent="Aurora Patch Agent" version="24.0.0" type="device">
+  <diagram id="aurora-patch-agent-arch" name="Architecture">
+    <mxGraphModel dx="1422" dy="794" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="Aurora Fleet Patching Agent — Architecture" style="text;html=1;align=center;verticalAlign=middle;fontSize=20;fontStyle=1;fontColor=#232F3E;" vertex="1" parent="1">
+          <mxGeometry x="450" y="20" width="500" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Orchestrator Account Boundary -->
+        <mxCell id="orchestrator-boundary" value="Orchestrator Account" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#CD2264;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#CD2264;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="80" y="80" width="1000" height="580" as="geometry" />
+        </mxCell>
+
+        <!-- VPC Boundary -->
+        <mxCell id="vpc-boundary" value="VPC (Private Subnets + NAT Gateway)" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=11;fontStyle=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_vpc;strokeColor=#248814;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#248814;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="100" y="120" width="960" height="520" as="geometry" />
+        </mxCell>
+
+        <!-- API Gateway -->
+        <mxCell id="apigw" value="Amazon API&lt;br&gt;Gateway" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.api_gateway;" vertex="1" parent="1">
+          <mxGeometry x="130" y="270" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Lambda Function -->
+        <mxCell id="lambda" value="Lambda&lt;br&gt;(FastAPI + React SPA)" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.lambda;" vertex="1" parent="1">
+          <mxGeometry x="270" y="270" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: API GW -> Lambda -->
+        <mxCell id="edge-apigw-lambda" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="apigw" target="lambda" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Agents Box -->
+        <mxCell id="agents-box" value="AI Agents" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#232F3E;fontSize=11;fontStyle=1;verticalAlign=top;align=center;" vertex="1" parent="1">
+          <mxGeometry x="380" y="150" width="360" height="260" as="geometry" />
+        </mxCell>
+
+        <!-- Individual Agents -->
+        <mxCell id="agent-discovery" value="Discovery" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7157B;fontColor=#FFFFFF;fontSize=9;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="400" y="185" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="agent-scanner" value="Scanner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7157B;fontColor=#FFFFFF;fontSize=9;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="480" y="185" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="agent-analyzer" value="Analyzer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7157B;fontColor=#FFFFFF;fontSize=9;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="560" y="185" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="agent-planner" value="Planner" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E7157B;fontColor=#FFFFFF;fontSize=9;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="640" y="185" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="agent-executor" value="Executor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ED7100;fontColor=#FFFFFF;fontSize=9;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="400" y="230" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="agent-validator" value="Validator" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ED7100;fontColor=#FFFFFF;fontSize=9;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="480" y="230" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="agent-rollback" value="Rollback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ED7100;fontColor=#FFFFFF;fontSize=9;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="560" y="230" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="agent-supervisor" value="Supervisor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ED7100;fontColor=#FFFFFF;fontSize=9;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="640" y="230" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="agent-advisor" value="Advisor" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#8C4FFF;fontColor=#FFFFFF;fontSize=9;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="400" y="275" width="70" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="agent-assessment" value="Assessment" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#8C4FFF;fontColor=#FFFFFF;fontSize=9;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="480" y="275" width="70" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Capabilities labels -->
+        <mxCell id="cap-recommend" value="Recommendation Engine&lt;br&gt;(human approves all actions)" style="text;html=1;align=left;verticalAlign=middle;fontSize=9;fontColor=#666666;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="400" y="320" width="200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="cap-learning" value="Outcome Learning&lt;br&gt;(gets smarter with each upgrade)" style="text;html=1;align=left;verticalAlign=middle;fontSize=9;fontColor=#666666;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="400" y="345" width="200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="cap-lts" value="LTS Awareness • Global DB Orchestration&lt;br&gt;CVE Scanning • Multi-Region" style="text;html=1;align=left;verticalAlign=middle;fontSize=9;fontColor=#666666;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="400" y="370" width="250" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Bedrock -->
+        <mxCell id="bedrock" value="Amazon Bedrock&lt;br&gt;(Claude Sonnet)" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#01A88D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sagemaker;" vertex="1" parent="1">
+          <mxGeometry x="800" y="180" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: Agents -> Bedrock -->
+        <mxCell id="edge-agents-bedrock" value="reasoning" style="edgeStyle=orthogonalEdgeStyle;fontSize=9;fontColor=#666666;" edge="1" source="agents-box" target="bedrock" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- DynamoDB -->
+        <mxCell id="dynamodb" value="DynamoDB&lt;br&gt;(State + Learning)" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#C925D1;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.dynamodb;" vertex="1" parent="1">
+          <mxGeometry x="800" y="290" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- DynamoDB contents -->
+        <mxCell id="ddb-contents" value="• Fleet state&lt;br&gt;• Recommendations&lt;br&gt;• Learned fixes&lt;br&gt;• Upgrade outcomes&lt;br&gt;• CVE cache" style="text;html=1;align=left;verticalAlign=top;fontSize=9;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="870" y="280" width="130" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: Lambda -> Agents -->
+        <mxCell id="edge-lambda-agents" style="edgeStyle=orthogonalEdgeStyle;" edge="1" source="lambda" target="agents-box" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: Lambda -> DynamoDB -->
+        <mxCell id="edge-lambda-ddb" style="edgeStyle=orthogonalEdgeStyle;dashed=1;" edge="1" source="lambda" target="dynamodb" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- SNS -->
+        <mxCell id="sns" value="SNS&lt;br&gt;(Notifications)" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#E7157B;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.sns;" vertex="1" parent="1">
+          <mxGeometry x="800" y="400" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- NAT Gateway -->
+        <mxCell id="natgw" value="NAT&lt;br&gt;Gateway" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#8C4FFF;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.nat_gateway;" vertex="1" parent="1">
+          <mxGeometry x="130" y="430" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- NVD API (external) -->
+        <mxCell id="nvd" value="NVD API&lt;br&gt;(CVE data)" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3E;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.general_internet_gateway;" vertex="1" parent="1">
+          <mxGeometry x="130" y="560" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: NAT -> NVD -->
+        <mxCell id="edge-nat-nvd" value="CVE fetch" style="edgeStyle=orthogonalEdgeStyle;fontSize=9;fontColor=#666666;" edge="1" source="natgw" target="nvd" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ================================================================ -->
+        <!-- Target Accounts -->
+        <!-- ================================================================ -->
+
+        <!-- STS AssumeRole arrow -->
+        <mxCell id="assume-role-label" value="STS AssumeRole&lt;br&gt;(cross-account)" style="text;html=1;align=center;verticalAlign=middle;fontSize=10;fontColor=#CD2264;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="380" y="680" width="150" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- Target Account A (prod) -->
+        <mxCell id="account-a" value="Target Account — Production" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=11;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#CD2264;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#CD2264;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="80" y="720" width="380" height="280" as="geometry" />
+        </mxCell>
+
+        <!-- Aurora PG in Account A -->
+        <mxCell id="aurora-pg-prod" value="Aurora&lt;br&gt;PostgreSQL" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#C925D1;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.aurora;" vertex="1" parent="1">
+          <mxGeometry x="120" y="780" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="aurora-mysql-prod" value="Aurora&lt;br&gt;MySQL" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#C925D1;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.aurora;" vertex="1" parent="1">
+          <mxGeometry x="220" y="780" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Global Database indicator -->
+        <mxCell id="global-db-label" value="Global Database&lt;br&gt;(us-east-2 + us-west-2)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E6F2FF;strokeColor=#1E88E5;fontSize=9;fontColor=#1E88E5;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="100" y="870" width="170" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Region labels -->
+        <mxCell id="region-east" value="us-east-2 (Primary)" style="text;html=1;align=center;fontSize=9;fontColor=#248814;" vertex="1" parent="1">
+          <mxGeometry x="100" y="920" width="110" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="region-west" value="us-west-2 (Secondary)" style="text;html=1;align=center;fontSize=9;fontColor=#1E88E5;" vertex="1" parent="1">
+          <mxGeometry x="220" y="920" width="120" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- Blue/Green Deployment indicator -->
+        <mxCell id="bg-deploy" value="Blue/Green&lt;br&gt;Deployments" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#43A047;fontSize=9;fontColor=#43A047;" vertex="1" parent="1">
+          <mxGeometry x="310" y="780" width="100" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Target Account B (staging/dev) -->
+        <mxCell id="account-b" value="Target Account — Staging / Dev" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=11;fontStyle=1;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_account;strokeColor=#CD2264;fillColor=none;verticalAlign=top;align=left;spacingLeft=30;fontColor=#CD2264;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="500" y="720" width="300" height="280" as="geometry" />
+        </mxCell>
+
+        <!-- Aurora in Account B -->
+        <mxCell id="aurora-pg-stg" value="Aurora&lt;br&gt;PostgreSQL" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#C925D1;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.aurora;" vertex="1" parent="1">
+          <mxGeometry x="550" y="780" width="50" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="aurora-mysql-stg" value="Aurora&lt;br&gt;MySQL" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#C925D1;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.aurora;" vertex="1" parent="1">
+          <mxGeometry x="660" y="780" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- IAM Role in target accounts -->
+        <mxCell id="iam-role-a" value="AuroraPatchAgentRole&lt;br&gt;(cross-account IAM)" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.role;" vertex="1" parent="1">
+          <mxGeometry x="370" y="870" width="40" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="iam-role-b" value="AuroraPatchAgentRole" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#DD344C;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.role;" vertex="1" parent="1">
+          <mxGeometry x="720" y="870" width="40" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Arrows: Orchestrator -> Target Accounts -->
+        <mxCell id="edge-orch-acctA" value="" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#CD2264;dashed=1;" edge="1" source="lambda" target="account-a" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edge-orch-acctB" value="" style="edgeStyle=orthogonalEdgeStyle;strokeColor=#CD2264;dashed=1;" edge="1" source="lambda" target="account-b" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- User icon -->
+        <mxCell id="user" value="Database&lt;br&gt;Administrator" style="outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#232F3E;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=10;fontStyle=0;aspect=fixed;pointerEvents=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.user;" vertex="1" parent="1">
+          <mxGeometry x="130" y="140" width="50" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Arrow: User -> API GW -->
+        <mxCell id="edge-user-apigw" value="UI / API" style="edgeStyle=orthogonalEdgeStyle;fontSize=9;fontColor=#666666;" edge="1" source="user" target="apigw" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Legend -->
+        <mxCell id="legend" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br&gt;Pink: Read-only agents (scan, analyze)&lt;br&gt;Orange: Action agents (execute, validate, rollback)&lt;br&gt;Purple: AI-powered reasoning (advisor, assessment)&lt;br&gt;&lt;br&gt;&lt;b&gt;Key Features&lt;/b&gt;&lt;br&gt;• Human-in-the-loop (recommend → approve → execute)&lt;br&gt;• Outcome learning (error fixes, duration estimates)&lt;br&gt;• Multi-engine (PostgreSQL + MySQL)&lt;br&gt;• Multi-region (Global Database aware)&lt;br&gt;• Multi-account (cross-account AssumeRole)&lt;br&gt;• LTS version tracking &amp; CVE scanning" style="text;html=1;align=left;verticalAlign=top;fontSize=10;fontColor=#232F3E;fillColor=#F5F5F5;strokeColor=#CCCCCC;rounded=1;" vertex="1" parent="1">
+          <mxGeometry x="870" y="720" width="280" height="260" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
