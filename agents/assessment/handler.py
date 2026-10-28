@@ -298,7 +298,8 @@ def _risk_summary(assessed: list[dict]) -> dict:
 
 def _generate_recommendation(risk_level: RiskLevel, risk_factors: list[str]) -> str:
     if risk_level == RiskLevel.LOW:
-        return "Safe to proceed with automated Blue/Green upgrade."
+        # Strategy-neutral: the assessment runs for both Blue/Green and in-place.
+        return "Low risk: safe to proceed with the automated upgrade."
     if risk_level == RiskLevel.MEDIUM:
         return f"Proceed with extended bake time. Watch: {', '.join(risk_factors[:2])}"
     if risk_level == RiskLevel.HIGH:

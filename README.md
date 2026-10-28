@@ -18,6 +18,36 @@ An **agentic** AI tool for fleet patching across **Aurora PostgreSQL** and **Aur
 > you can't afford to lose. See [LICENSE](LICENSE) for the full "as is"
 > warranty disclaimer.
 
+## What Works Out of the Box (read this first)
+
+A default deployment is deliberately conservative: until you configure an API
+token, it can't run scans, analysis, or upgrades, and it can't change your fleet
+until you also grant extra permissions yourself. Some features also have known
+limitations (see [Known Limitations and Workarounds](#known-limitations-and-workarounds)).
+
+**Set an API token first.** The API is fail-closed: every `POST`/`PUT`/`DELETE`
+request needs the token, and that includes **Scan Fleet**, the CVE scan,
+analysis, Version Changes, the AI Advisor, and AI Diagnose, not just upgrades.
+Without a token, the UI can only show results that were already stored.
+See [API Authentication](#running-upgrades-api-authentication-important).
+
+| Capability | With an API token set | To enable |
+|---|---|---|
+| Fleet scan, environment classification from tags | ✅ Works | — |
+| CVE posture and urgency scoring | ✅ Works | — |
+| Version Changes, cluster analysis, AI Advisor, AI Diagnose | ✅ Works if Bedrock model access is enabled | [Bedrock prerequisites](#what-you-need) |
+| Viewing stored fleet, upgrade history, and maintenance windows | ✅ Works even without a token (see [Your UI URL](#your-ui-url)) | — |
+| In-place upgrade | ✅ Works on clusters without **Copy tags to snapshots**. On clusters with it (the console default), the pre-upgrade snapshot needs `rds:AddTagsToResource`, so the upgrade stops safely at the snapshot step | [Enabling Blue/Green Execution](#enabling-bluegreen-execution-additional-iam-opt-in) (same opt-in policy) |
+| Blue/Green create, switchover, delete | ❌ Fails with `AccessDenied` | [Enabling Blue/Green Execution](#enabling-bluegreen-execution-additional-iam-opt-in) |
+| **Apply Fix**: reboot writer instance | ❌ Fails with `AccessDenied` | Same opt-in policy (`rds:RebootDBInstance`) |
+| **Apply Fix**: grant a missing IAM permission | Only self-grants **read-only** actions | Grant write actions yourself |
+| Capture Baseline, DB Validation, live database metadata | ❌ Needs database access | DB credentials and a network path: [Traffic Generator](#traffic-generator-optional) and [IAM Database Authentication](#iam-database-authentication) |
+| Traffic generator | Deployed and scheduled; does nothing until DB credentials are set | Read the warning in [Traffic Generator](#traffic-generator-optional) first |
+| Multi-account scanning | ✅ With the cross-account role | [Multi-Account Fleet Management](#multi-account-fleet-management) |
+| Multi-account Blue/Green | ❌ Fails with `AccessDenied` | [Cross-account opt-in policy](#multi-account-the-cross-account-role-in-each-target-account) |
+| Upgrades outside the default change windows | ❌ Blocked by the change-window guardrail | Set windows in the **Maintenance** tab, or select **Skip window check** |
+| Scanning more than one Region | Scans the Region the agent is deployed in | Set `scan.regions` in `deploy-config.json` (or `SCAN_REGIONS`) |
+
 ## Architecture
 
 ```
@@ -85,7 +115,11 @@ cdk deploy AuroraPatchAgentUiStack \
   -c deploy_infra=false
 ```
 
-The output URL gives you the full UI — scan your fleet, view CVE exposure, analyze version drift, and run upgrades.
+The output URL ([Your UI URL](#your-ui-url)) gives you the full UI. To scan your fleet, view CVE exposure, analyze version drift, or run upgrades, first set an API token ([API Authentication](#running-upgrades-api-authentication-important)); Blue/Green upgrades also need the opt-in permissions in [Enabling Blue/Green Execution](#enabling-bluegreen-execution-additional-iam-opt-in).
+
+> **Note:** "Scan-only" here means the orchestration stack isn't deployed. The
+> UI stack still grants the agent its upgrade permissions; for read-only access
+> to other accounts, use the cross-account role with `ReadOnlyMode=true`.
 
 ## Full Deployment (with Orchestration)
 
@@ -98,12 +132,45 @@ cdk deploy --all \
   -c security_group_id=sg-xxx
 ```
 
+## Your UI URL
+
+The UI and API are served by an Amazon API Gateway endpoint created by
+`AuroraPatchAgentUiStack`. The URL has this form:
+
+```
+https://<api-id>.execute-api.<region>.amazonaws.com/prod/
+```
+
+`<api-id>` is assigned by API Gateway and is different for every deployment;
+keep the trailing `/prod/` (the API lives under `/prod/api/...`). Find it in the
+`cdk deploy` output (`AuroraPatchAgentUiStack.UiUrl`), in the CloudFormation
+console (**AuroraPatchAgentUiStack** > **Outputs** > `UiUrl`), or with:
+
+```bash
+aws cloudformation describe-stacks --region <region> --stack-name AuroraPatchAgentUiStack \
+  --query "Stacks[0].Outputs[?OutputKey=='UiUrl'].OutputValue" --output text
+```
+
+The URL changes if you delete and recreate the stack. The sample doesn't set up
+a custom domain; add an API Gateway custom domain if you need one.
+
+> **⚠️ Treat the URL as sensitive.** The endpoint is reachable from the
+> internet, and there is no sign-in in front of the UI. State-changing and
+> scanning requests require the API token, but **`GET` requests don't**: anyone
+> who has the URL can read the stored fleet inventory (account IDs, cluster
+> names, engine versions, extensions), upgrade history, and maintenance
+> windows. Don't share the URL, and for anything beyond a sandbox account,
+> restrict access to the API, for example with an
+> [API Gateway resource policy](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-resource-policies.html)
+> limited to your network, or put it behind your organization's sign-in.
+
 ## What You Need
 
 | Requirement | Notes |
 |---|---|
-| AWS account with Aurora clusters | PostgreSQL and/or MySQL, any region, any version |
-| VPC with public subnets | For NAT Gateway placement (Lambda needs internet for Bedrock/NVD API) |
+| AWS account with Aurora clusters | PostgreSQL and/or MySQL, any version. The agent scans the Region it's deployed in, or the Regions in `scan.regions` / `SCAN_REGIONS` |
+| Amazon Bedrock model access | Anthropic **Claude Sonnet 4.5** enabled in the account. The default model ID is the US cross-Region inference profile (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`), which works only when the agent runs in a US Region; elsewhere set `bedrock.region` / `bedrock.model_id` in `deploy-config.json`. Without model access, scanning still works but every AI feature fails. |
+| VPC with public subnets | For NAT Gateway placement (Lambda needs internet for Bedrock/NVD API). Pass two public subnets, the first in AZ `<region>a` and the second in `<region>b` (the stack assumes this order), and leave `10.0.200.0/24` and `10.0.201.0/24` free (or set `private_subnet_cidrs`) for the Lambda private subnets the stack creates |
 | Security group | Must allow outbound HTTPS; if connecting to clusters for traffic gen, needs inbound 5432 (PG) or 3306 (MySQL) rule |
 | AWS CLI configured | With permissions for RDS, Lambda, API Gateway, Bedrock, IAM, EC2 |
 | Node.js 18+ | For UI build |
@@ -112,14 +179,16 @@ cdk deploy --all \
 
 ## Running Upgrades: API Authentication (important)
 
-The API is **fail-closed by design.** Read-only actions (scanning, viewing the
-fleet, analysis) always work, but **state-changing actions** — starting an
-upgrade, switchover, rollback, deleting a cluster or deployment — are **blocked
-by default** so that a freshly deployed instance can't be driven anonymously by
-anyone who finds its URL. The buttons are always visible in the UI; whether the
-backend honors them depends on how you configure auth.
+The API is **fail-closed by design.** Every `POST`, `PUT`, `PATCH`, and
+`DELETE` request is **blocked by default**: not only starting an upgrade,
+switchover, rollback, or deletion, but also **Scan Fleet**, the CVE scan,
+analysis, Version Changes, the AI Advisor, AI Diagnose, and saving settings.
+This means a freshly deployed instance can't be driven anonymously by anyone who
+finds its URL. Only `GET` requests (viewing stored results) work without
+authentication. The buttons are always visible in the UI; whether the backend
+honors them depends on how you configure auth.
 
-Pick one of these before you expect the upgrade/switchover/delete buttons to work:
+Pick one of these before you use the agent:
 
 **Option A — require a token (recommended for anything shared).**
 Set an API token on the backend and give the same token to the UI:
@@ -146,8 +215,178 @@ cdk deploy -c allow_unauthenticated=true ...
 # (or "security": { "allow_unauthenticated": true } in deploy-config.json)
 ```
 
-If you set neither, mutating endpoints return `503` with a message explaining
-how to enable them — read-only scanning still works.
+If you set neither, every `POST`/`PUT`/`PATCH`/`DELETE` request (including
+scans and analysis) returns `503` with a message explaining how to enable them;
+only viewing stored results works.
+
+## Enabling Blue/Green Execution (additional IAM, opt-in)
+
+The stacks in this repo grant the agent only the permissions its code calls
+directly. **Blue/Green execution needs a few more, and they are not granted by
+default.** RDS checks them on the caller's behalf while it creates, switches
+over, and deletes a Blue/Green deployment, even though the agent never calls
+these APIs itself. You decide whether to add them.
+
+**Without these permissions:** scanning, analysis, and the AI Advisor work.
+Upgrades stop safely before changing anything:
+
+* Every upgrade (Blue/Green and in-place) first takes a pre-upgrade snapshot as
+  its rollback anchor. On clusters with **Copy tags to snapshots** enabled (the
+  console default), RDS tags that snapshot, which needs `rds:AddTagsToResource`,
+  so the upgrade stops at the snapshot step. On clusters without it, in-place
+  upgrades work.
+* Creating, switching over, or deleting a Blue/Green deployment fails with
+  `AccessDenied`.
+
+The **Upgrades** tab shows the error, and **AI Diagnose** names the denied
+action. **Apply Fix** won't grant it for you, because it only self-grants
+read-only actions.
+
+| Permission | Needed for | Why |
+|---|---|---|
+| `rds:AddTagsToResource` | Blue/Green create; the pre-upgrade snapshot of every upgrade | RDS copies the source cluster's tags onto the green resources, and onto snapshots of clusters with **Copy tags to snapshots** enabled. The agent also tags its pre-upgrade snapshots. |
+| `rds:CreateDBClusterEndpoint` | Blue/Green create | RDS recreates custom cluster endpoints in the green environment. |
+| `rds:ModifyDBInstance` | Blue/Green switchover | RDS renames the blue and green instances during switchover. |
+| `rds:DeleteDBClusterEndpoint` | Deleting a Blue/Green deployment | Removes the green environment's endpoints. |
+| `rds:DeleteGlobalCluster` | Deleting a Blue/Green deployment of an Aurora Global Database | Global Database clusters only. |
+| `rds:RebootDBInstance` | The **reboot** Apply Fix and the `reboot_db_instance` change-plan step | Applies pending parameter-group changes. |
+
+These follow AWS's
+[Authorizing access to Aurora blue/green deployment operations](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/blue-green-deployments-authorizing-access.html).
+`rds:ModifyDBInstance` isn't listed on that page but is required for switchover
+in practice. Resources are scoped to your account (and Region, for a single
+account). Aurora names green resources internally, so only `*` patterns work
+for the resource IDs, not name prefixes.
+
+Before you add these, also read the Blue/Green items in
+[Known Limitations and Workarounds](#known-limitations-and-workarounds).
+
+### Single account (the agent's own Lambda role)
+
+After deploying the stack, attach this inline policy to the API function's role:
+
+```bash
+REGION=us-east-2   # the Region you deployed to
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ROLE=$(aws lambda get-function-configuration --region "$REGION" \
+  --function-name aurora-patch-agent-api --query Role --output text | cut -d/ -f2)
+
+cat > /tmp/aurora-patch-agent-bluegreen.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BlueGreenActionsCheckedByRds",
+      "Effect": "Allow",
+      "Action": [
+        "rds:AddTagsToResource",
+        "rds:CreateDBClusterEndpoint",
+        "rds:DeleteDBClusterEndpoint",
+        "rds:ModifyDBInstance"
+      ],
+      "Resource": [
+        "arn:aws:rds:${REGION}:${ACCOUNT_ID}:cluster:*",
+        "arn:aws:rds:${REGION}:${ACCOUNT_ID}:db:*",
+        "arn:aws:rds:${REGION}:${ACCOUNT_ID}:cluster-endpoint:*",
+        "arn:aws:rds:${REGION}:${ACCOUNT_ID}:cluster-snapshot:*",
+        "arn:aws:rds:${REGION}:${ACCOUNT_ID}:deployment:*"
+      ]
+    },
+    {
+      "Sid": "RebootForApplyFix",
+      "Effect": "Allow",
+      "Action": "rds:RebootDBInstance",
+      "Resource": "arn:aws:rds:${REGION}:${ACCOUNT_ID}:db:*"
+    },
+    {
+      "Sid": "GlobalDatabaseBlueGreenDelete",
+      "Effect": "Allow",
+      "Action": "rds:DeleteGlobalCluster",
+      "Resource": "arn:aws:rds::${ACCOUNT_ID}:global-cluster:*"
+    }
+  ]
+}
+EOF
+
+aws iam put-role-policy --role-name "$ROLE" \
+  --policy-name AuroraPatchAgentBlueGreenExecution \
+  --policy-document file:///tmp/aurora-patch-agent-bluegreen.json
+```
+
+To turn it off again, and **before you delete the stack** (CloudFormation can't
+delete a role that still has a policy it didn't create):
+
+```bash
+aws iam delete-role-policy --role-name "$ROLE" --policy-name AuroraPatchAgentBlueGreenExecution
+```
+
+### Multi-account (the cross-account role in each target account)
+
+The `cdk/cross_account_role.yaml` write policy doesn't cover the Blue/Green
+lifecycle by itself. Its Blue/Green statement is scoped to a
+`blue-green-deployment:*` resource type, but RDS deployment ARNs use
+`deployment:*`, so switchover and delete aren't authorized. In each target
+account where you want Blue/Green execution (not needed for `ReadOnlyMode=true`
+accounts), attach this policy to `AuroraPatchAgentRole`:
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+cat > /tmp/aurora-patch-agent-cross-account-bluegreen.json <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BlueGreenDeploymentLifecycle",
+      "Effect": "Allow",
+      "Action": [
+        "rds:CreateBlueGreenDeployment",
+        "rds:SwitchoverBlueGreenDeployment",
+        "rds:DeleteBlueGreenDeployment"
+      ],
+      "Resource": [
+        "arn:aws:rds:*:${ACCOUNT_ID}:cluster:*",
+        "arn:aws:rds:*:${ACCOUNT_ID}:deployment:*"
+      ]
+    },
+    {
+      "Sid": "BlueGreenActionsCheckedByRds",
+      "Effect": "Allow",
+      "Action": [
+        "rds:AddTagsToResource",
+        "rds:CreateDBCluster",
+        "rds:CreateDBInstance",
+        "rds:CreateDBClusterEndpoint",
+        "rds:PromoteReadReplicaDBCluster",
+        "rds:ModifyDBInstance",
+        "rds:DeleteDBCluster",
+        "rds:DeleteDBInstance",
+        "rds:DeleteDBClusterEndpoint",
+        "rds:RebootDBInstance"
+      ],
+      "Resource": [
+        "arn:aws:rds:*:${ACCOUNT_ID}:cluster:*",
+        "arn:aws:rds:*:${ACCOUNT_ID}:db:*",
+        "arn:aws:rds:*:${ACCOUNT_ID}:cluster-endpoint:*",
+        "arn:aws:rds:*:${ACCOUNT_ID}:cluster-snapshot:*",
+        "arn:aws:rds:*:${ACCOUNT_ID}:cluster-pg:*",
+        "arn:aws:rds:*:${ACCOUNT_ID}:subgrp:*",
+        "arn:aws:rds:*:${ACCOUNT_ID}:deployment:*"
+      ]
+    }
+  ]
+}
+EOF
+
+aws iam put-role-policy --role-name AuroraPatchAgentRole \
+  --policy-name AuroraPatchAgentBlueGreenExecution \
+  --policy-document file:///tmp/aurora-patch-agent-cross-account-bluegreen.json
+```
+
+> A full Blue/Green create, switchover, and delete succeeded in a test account
+> with the single-account permissions above. The Global Database statement and
+> the cross-account policy follow the same AWS documentation but have not been
+> tested end to end; validate them in a non-production account first.
 
 ## Portable Deployment
 
@@ -242,7 +481,8 @@ aws cloudformation deploy \
 | Mode | Permissions | Use Case |
 |---|---|---|
 | Read-Only | Describe clusters, CloudWatch metrics, Health API | Scan + assess only |
-| Full Access | + Blue/Green create/switchover/delete, ModifyDBCluster | Scan + execute upgrades |
+| Full Access | + ModifyDBCluster, snapshots, Blue/Green API actions | Scan + in-place upgrades |
+| Full Access + opt-in policy | + the policy in [Enabling Blue/Green Execution](#multi-account-the-cross-account-role-in-each-target-account) | Scan + Blue/Green and in-place upgrades |
 
 ## IAM Database Authentication
 
@@ -291,14 +531,14 @@ The IAM user has read-only access to `pg_catalog` and `information_schema` — s
 ### Fleet Tab
 - Full cluster inventory (version, environment, status, upgrade targets)
 - **CVE Risk** column showing exposure per cluster
-- **Patch CVE** button for immediate vulnerability-driven upgrades
+- **Patch CVE** button for immediate vulnerability-driven upgrades (shown only for clusters with CVE exposure)
 - **In-Place** upgrade button for clusters that don't support Blue/Green (PG < 14.6)
 - Guardrails modal with pre-flight checks before any upgrade
 
 ### Upgrades Tab
 - Monitor Blue/Green deployments and in-place upgrades in progress
 - **AI Diagnose** button on failures — Bedrock analyzes the error and suggests fixes
-- **Apply Fix** button to auto-remediate (e.g., missing IAM permissions)
+- **Apply Fix** button to auto-remediate selected errors (it only self-grants **read-only** IAM actions; write permissions must be granted by you)
 - Real-time status polling (10s interval)
 
 ### Cluster Detail Panel
@@ -318,7 +558,7 @@ The IAM user has read-only access to `pg_catalog` and `information_schema` — s
 - Model-powered recommendations with risk assessment
 
 ### Settings
-- Runtime model selector (Sonnet 5 / Sonnet 4.6 / Haiku 4.5 / Opus 4.8)
+- Runtime model selector (Sonnet 4.5 default; the list also shows Sonnet 5 / Sonnet 4.6 / Haiku 4.5 / Opus 4.8). Only pick a model your account has Bedrock access to in the agent's Region; otherwise AI calls fail.
 
 ## Upgrade Strategies
 
@@ -334,10 +574,26 @@ The agent automatically suggests the appropriate strategy based on engine type, 
 - **Aurora MySQL v2 → v3** (5.7 → 8.0): Major version jump with breaking changes (reserved keywords, charset, auth plugin changes)
 - **Aurora MySQL v2 EOL**: Standard support ended Oct 2024 — extended support charges apply
 
+### PostgreSQL-Specific Notes
+- **Blue/Green requires**: a custom DB cluster parameter group with `rds.logical_replication = 1`, and a **reboot of the writer instance** after you set it (the default parameter group can't be modified). Without it, Blue/Green create fails with `SourceClusterNotSupportedFault`.
+
+## Known Limitations and Workarounds
+
+Read these before running upgrades.
+
+| Limitation | What you see | Workaround |
+|---|---|---|
+| **Default change windows:** production Sat–Sun 04:00–07:00 UTC, staging Mon–Fri 02:00–08:00 UTC, dev anytime. | The Change Window check fails and the upgrade is blocked. | Set the windows in the **Maintenance** tab, or select **Skip window check** in the guardrails dialog. |
+| **Check the upgrade target.** When a cluster is already on the newest minor version, the suggested target can be the newest **major** version (for example, 15.19 → 18.6). | The guardrails dialog header shows a major-version jump. | Read the version in the dialog header before you choose **Proceed with Upgrade**. Use **Version Changes** in the cluster panel to review a major upgrade first. |
+| **Schema changes cancel Blue/Green switchovers.** Blue/Green replicates with logical replication, which doesn't carry DDL. Any DDL on the source cluster after the green environment is created, even `CREATE ... IF NOT EXISTS`, makes RDS cancel the switchover, and the deployment must be deleted and created again. The agent's own tools (the traffic generator and **Capture Baseline**) only run DDL when their objects don't exist yet, but your application's migrations count too. | RDS event: "Switchover ... was cancelled because there are DDL or Large Object changes ... that can't be replicated". | Pause schema migrations on the source cluster until the switchover completes. Enable the traffic generator and capture baselines *before* creating a Blue/Green deployment, not during it. |
+| **Major-version Blue/Green uses the default parameter group on green.** For minor upgrades the green cluster keeps your custom cluster parameter group; for a major upgrade it can't (the parameter-group family changes), so green gets the new family's default group. | After switchover, the cluster shows `default.aurora-...`. | Before switchover, **Modify** the green cluster in the RDS console to use a custom parameter group for the new family (apply immediately) and reboot the green writer. |
+| **Aurora MySQL CVE data is a static list.** PostgreSQL CVEs come from the NVD API; MySQL uses a built-in list of 8 CVEs. | MySQL clusters are only flagged for CVEs on that list. | Check the [Aurora MySQL release notes](https://docs.aws.amazon.com/AmazonRDS/latest/AuroraMySQLReleaseNotes/AuroraMySQL.Updates.30Updates.html) for newer security fixes. |
+| **AWS Health events need Business or Enterprise Support.** | Logs show `SubscriptionRequiredException`; scoring skips Health events. | None needed; CVE and end-of-life scoring still work. |
+
 ## Security Scanning
 
 Integrates with:
-- **NVD API** (NIST): Live CVE lookups for PostgreSQL and MySQL with 6-hour cache (persisted to DynamoDB)
+- **NVD API** (NIST): Live CVE lookups for PostgreSQL with 6-hour cache (persisted to DynamoDB). MySQL uses the static list only (see [Known Limitations](#known-limitations-and-workarounds)).
 - **AWS Security Bulletins**: Aurora-specific advisories
 - **Known CVE databases**: 5 PostgreSQL CVEs + 8 MySQL CVEs (static fallback)
 - **Urgency scoring**: Critical (>=60), High (>=35), Medium (>=15) based on CVE severity, EOL proximity, version drift
@@ -348,7 +604,7 @@ When an upgrade fails, the AI diagnosis system:
 1. Checks learned fixes from past successful resolutions (instant, no AI call)
 2. Matches known error patterns against a static remediation map (instant)
 3. Falls back to Bedrock Claude for novel errors (analyzes root cause, suggests fix)
-4. Provides one-click "Apply Fix" for actionable remediations (e.g., adding IAM permissions, rebooting instances)
+4. Provides one-click "Apply Fix" for actionable remediations. Self-granted IAM fixes are limited to **read-only** actions; rebooting an instance needs the opt-in `rds:RebootDBInstance` permission ([Enabling Blue/Green Execution](#enabling-bluegreen-execution-additional-iam-opt-in))
 5. Successful fixes are persisted — next occurrence resolves instantly
 
 ## Traffic Generator (Optional)
@@ -362,6 +618,36 @@ Generates realistic e-commerce workload to build performance baselines per envir
 | Production | 15 | 200 | Heavy analytics |
 
 Runs every 15 minutes via EventBridge. Requires DB credentials (via `db_user`/`db_password` or `db_secret_arn`).
+
+> **⚠️ Warning: for demo and test accounts only. Never point it at clusters
+> that hold real data.**
+>
+> The traffic generator is deployed and scheduled by `AuroraPatchAgentUiStack`
+> by default. It does nothing until you provide DB credentials. Once it has
+> them, **every 15 minutes, on every Aurora PostgreSQL cluster it can reach in
+> the Region** (except `-old*` and `-green-*` clusters), it:
+>
+> * creates the `pg_stat_statements` extension and the tables `customers`,
+>   `products`, `orders`, `order_items`, and `page_views` (plus indexes) in the
+>   `postgres` database, if they don't exist yet;
+> * inserts seed data once (500 customers, 200 products);
+> * runs reads and writes to simulate a workload per environment.
+>
+> Schema statements run only when those objects are missing. If you enable the
+> generator for the first time while a Blue/Green deployment is in progress,
+> that first run's DDL makes RDS **cancel the switchover** (see
+> [Known Limitations](#known-limitations-and-workarounds)), so enable it before
+> creating a deployment. Aurora MySQL clusters are skipped.
+>
+> To keep it off: don't set `db_user`/`db_password`/`db_secret_arn`, or disable
+> the schedule after deploying:
+>
+> ```bash
+> aws events disable-rule --region <region> --name aurora-patch-agent-traffic-schedule
+> ```
+>
+> To remove what it created, drop those five tables from the `postgres`
+> database of each affected cluster.
 
 ## Project Structure
 
@@ -442,6 +728,23 @@ aws lambda update-function-code \
   --region us-east-2
 ```
 
+## Cleanup
+
+1. Remove the opt-in policy if you added it (CloudFormation can't delete a role
+   that still has a policy it didn't create):
+   `aws iam delete-role-policy --role-name <api-function-role> --policy-name AuroraPatchAgentBlueGreenExecution`
+2. Delete any Blue/Green deployments the agent created, and any leftover
+   `<cluster>-old1` clusters after a switchover. The agent doesn't delete these on
+   stack deletion, and they keep accruing instance charges.
+3. Delete the stacks: `cdk destroy --all` (or `cdk destroy AuroraPatchAgentUiStack`).
+4. Delete the DynamoDB table `aurora-patch-agent-ui-state`. It is retained on
+   stack deletion so upgrade history isn't lost by accident.
+5. Review snapshots the agent created (`<cluster>-pre-upgrade-*` before each
+   upgrade, `<cluster>-final-*` from **Delete Old**) and delete the ones you no
+   longer need.
+6. If you enabled the traffic generator, drop its tables from the clusters it
+   ran against (see [Traffic Generator](#traffic-generator-optional)).
+
 ## Estimated Monthly Cost
 
 | Component | Cost |
@@ -453,3 +756,7 @@ aws lambda update-function-code \
 | DynamoDB (if deployed) | ~$1 |
 | **Total (scan-only)** | **~$45/month** |
 | **Total (full + demo clusters)** | **~$85/month** |
+
+Aurora instances are billed separately. A Blue/Green deployment runs a full copy
+of the cluster (the green environment) until you switch over and delete the old
+cluster, so instance cost roughly doubles for that time.

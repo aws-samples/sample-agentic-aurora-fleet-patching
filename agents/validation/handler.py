@@ -137,7 +137,8 @@ def get_current_latency(cluster_id: str, region: str) -> float:
                 StartTime=now - timedelta(minutes=10),
                 EndTime=now,
                 Period=60,
-                Statistics=["p99"],
+                # Percentiles go only in ExtendedStatistics; "p99" in Statistics
+                # made every call fail, so the latency check silently returned 0.
                 ExtendedStatistics=["p99"],
             )
             if response.get("Datapoints"):

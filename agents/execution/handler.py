@@ -120,19 +120,23 @@ def create_blue_green(cluster_id: str, target_version: str, region: str) -> dict
         }
         # When the source cluster uses a custom (non-default) DB cluster
         # parameter group, RDS requires an explicit target parameter group for
-        # the engine-version upgrade. Resolve the default group for the target
-        # version's family so the upgrade is accepted.
+        # the engine-version upgrade. Keep the source group for same-family
+        # upgrades; see _resolve_target_cluster_parameter_group.
         source_pg = cluster.get("DBClusterParameterGroup", "")
         if source_pg and not source_pg.startswith("default."):
             target_pg = _resolve_target_cluster_parameter_group(
-                client, cluster.get("Engine", ""), target_version
+                client, cluster.get("Engine", ""), target_version, source_pg
             )
             if target_pg:
                 params["TargetDBClusterParameterGroupName"] = target_pg
-                logger.info(
-                    f"Source uses custom cluster PG '{source_pg}'; "
-                    f"targeting '{target_pg}' for the upgrade"
-                )
+                if target_pg == source_pg:
+                    logger.info(f"Keeping custom cluster PG '{source_pg}' on the green cluster")
+                else:
+                    logger.warning(
+                        f"Major version upgrade: source custom cluster PG '{source_pg}' "
+                        f"doesn't match the target family; green uses '{target_pg}'. "
+                        "Re-apply custom parameters on the green cluster before switchover."
+                    )
             else:
                 logger.warning(
                     f"Could not resolve a target cluster parameter group for "
@@ -308,13 +312,18 @@ def _get_cluster(client, cluster_id: str) -> dict | None:
         return None
 
 
-def _resolve_target_cluster_parameter_group(client, engine: str, target_version: str) -> str | None:
-    """Return the default DB cluster parameter group name for the target
-    engine version's parameter-group family (e.g. 'default.aurora-postgresql15').
+def _resolve_target_cluster_parameter_group(client, engine: str, target_version: str,
+                                            source_pg: str = "") -> str | None:
+    """Pick the DB cluster parameter group for the green cluster.
 
     RDS rejects a Blue/Green create when the source uses a custom cluster
-    parameter group unless a target group is named explicitly. The default
-    group for the target family is a safe, always-present choice.
+    parameter group unless a target group is named explicitly.
+
+    * Same parameter-group family (minor upgrade): reuse the source's custom
+      group, so the green cluster keeps its settings (for example
+      rds.logical_replication or binlog_format).
+    * Different family (major upgrade): the source group can't be used, so fall
+      back to the target family's default group (always present).
     """
     try:
         kwargs = {"EngineVersion": target_version}
@@ -324,7 +333,15 @@ def _resolve_target_cluster_parameter_group(client, engine: str, target_version:
         if not versions:
             return None
         family = versions[0].get("DBParameterGroupFamily")
-        return f"default.{family}" if family else None
+        if not family:
+            return None
+        if source_pg:
+            groups = client.describe_db_cluster_parameter_groups(
+                DBClusterParameterGroupName=source_pg
+            ).get("DBClusterParameterGroups", [])
+            if groups and groups[0].get("DBParameterGroupFamily") == family:
+                return source_pg
+        return f"default.{family}"
     except Exception as e:
         logger.warning(f"Failed to resolve target cluster parameter group: {e}")
         return None

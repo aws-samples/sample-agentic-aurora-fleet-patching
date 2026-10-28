@@ -50,9 +50,13 @@ def capture_baseline(cluster_id: str, region: str = "") -> dict:
     try:
         cur = conn.cursor()
 
-        # Ensure pg_stat_statements extension is available
+        # Ensure pg_stat_statements extension is available. Only issue the DDL
+        # when it's missing: even a no-op CREATE EXTENSION IF NOT EXISTS makes
+        # Aurora cancel a pending Blue/Green switchover.
         try:
-            cur.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+            cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'")
+            if not cur.fetchone():
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
         except Exception:
             conn.rollback()
 

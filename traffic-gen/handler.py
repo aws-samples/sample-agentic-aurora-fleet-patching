@@ -178,14 +178,42 @@ def get_connection(endpoint, dbname=DB_NAME):
     )
 
 
-def setup_schema(endpoint):
-    """Create database, tables, and seed data if needed."""
+def _schema_ready(cur) -> bool:
+    """True when every object SCHEMA_SQL would create already exists."""
+    cur.execute("""
+        SELECT
+          (SELECT count(*) FROM pg_extension WHERE extname = 'pg_stat_statements') = 1
+          AND to_regclass('public.customers') IS NOT NULL
+          AND to_regclass('public.products') IS NOT NULL
+          AND to_regclass('public.orders') IS NOT NULL
+          AND to_regclass('public.order_items') IS NOT NULL
+          AND to_regclass('public.page_views') IS NOT NULL
+          AND to_regclass('public.idx_page_views_created') IS NOT NULL
+          AND EXISTS (SELECT 1 FROM information_schema.columns
+                      WHERE table_name = 'products' AND column_name = 'stock')
+    """)
+    return bool(cur.fetchone()[0])
+
+
+def setup_schema(endpoint, allow_ddl=True):
+    """Create database, tables, and seed data if needed.
+
+    DDL runs only when the schema is missing. Even no-op DDL such as
+    CREATE TABLE IF NOT EXISTS makes Aurora cancel a Blue/Green switchover
+    ("DDL ... changes that can't be replicated"), so it must not run on every
+    invocation, and never while the cluster is in a Blue/Green deployment
+    (allow_ddl=False).
+    """
     # First connect to postgres to create ecommerce DB if missing
     conn = get_connection(endpoint, dbname="postgres")
     conn.autocommit = True
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (DB_NAME,))
     if not cur.fetchone():
+        if not allow_ddl:
+            cur.close()
+            conn.close()
+            return {"skipped": "database missing; schema setup deferred during Blue/Green"}
         # DB_NAME is a config-supplied identifier, not a value, so it can't be
         # passed as a %s param — quote it safely instead of f-string interpolating it.
         # nosemgrep: sqlalchemy-execute-raw-query -- not SQLAlchemy; this is
@@ -198,15 +226,20 @@ def setup_schema(endpoint):
     conn = get_connection(endpoint)
     conn.autocommit = True
     cur = conn.cursor()
-    cur.execute(SCHEMA_SQL)
+    if not _schema_ready(cur):
+        if not allow_ddl:
+            cur.close()
+            conn.close()
+            return {"skipped": "schema incomplete; DDL deferred during Blue/Green"}
+        cur.execute(SCHEMA_SQL)
 
-    # Handle existing tables missing columns (e.g. stock on products)
-    cur.execute("""
-        SELECT column_name FROM information_schema.columns
-        WHERE table_name = 'products' AND column_name = 'stock'
-    """)
-    if not cur.fetchone():
-        cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS stock INTEGER DEFAULT 0")
+        # Handle existing tables missing columns (e.g. stock on products)
+        cur.execute("""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'products' AND column_name = 'stock'
+        """)
+        if not cur.fetchone():
+            cur.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS stock INTEGER DEFAULT 0")
 
     # Check if products table has a sku column (some clusters have NOT NULL constraint)
     cur.execute("""
@@ -217,11 +250,15 @@ def setup_schema(endpoint):
 
     cur.execute(SEED_SQL)
 
-    if has_sku:
-        seed_products = SEED_PRODUCTS_SQL.format(sku_col=", sku", sku_val=", 'SKU-' || g")
-    else:
-        seed_products = SEED_PRODUCTS_SQL.format(sku_col="", sku_val="")
-    cur.execute(seed_products)
+    # products has no unique key, so ON CONFLICT DO NOTHING never fires and a
+    # blind insert grew the table by 200 rows on every run. Seed once.
+    cur.execute("SELECT count(*) FROM products")
+    if cur.fetchone()[0] < 200:
+        if has_sku:
+            seed_products = SEED_PRODUCTS_SQL.format(sku_col=", sku", sku_val=", 'SKU-' || g")
+        else:
+            seed_products = SEED_PRODUCTS_SQL.format(sku_col="", sku_val="")
+        cur.execute(seed_products)
     cur.execute("SELECT count(*) FROM customers")
     customers = cur.fetchone()[0]
     cur.execute("SELECT count(*) FROM products")

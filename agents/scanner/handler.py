@@ -353,6 +353,12 @@ def scan_fleet_urgency(clusters: list[dict], region: str = "") -> dict:
     Fetches live CVE data from NVD and merges with static KNOWN_CVES (live takes priority).
     Uses persistent DynamoDB cache to survive Lambda cold starts and NVD outages.
     """
+    # Callers usually don't pass a Region; an empty string would make boto3
+    # build "https://rds..amazonaws.com" and the Health filter reject [""].
+    if not region:
+        from shared.config import DEPLOYMENT_REGION
+        region = DEPLOYMENT_REGION
+
     # Use persistent cache with full fallback chain
     from shared.cve_cache import get_cves_with_fallback
     merged_cves = get_cves_with_fallback(_fetch_live_cves, KNOWN_CVES)
@@ -424,9 +430,15 @@ def _assess_urgency(cluster: dict, cve_database: dict | None = None, engine_type
     reasons = []
     cve_exposure = []
 
+    # MySQL CVE ranges use the Aurora version ("3.08.0"), not the full engine
+    # version ("8.0.mysql_aurora.3.08.0"); compare like with like.
+    cve_version = version
+    if engine_type == "aurora-mysql" and "mysql_aurora." in version:
+        cve_version = version.split("mysql_aurora.")[-1]
+
     # Check CVE exposure
     for cve_id, cve_info in cves_to_check.items():
-        if _version_affected(version, cve_info["affected"]):
+        if _version_affected(cve_version, cve_info["affected"]):
             severity_score = {"CRITICAL": 40, "HIGH": 30, "MEDIUM": 15, "LOW": 5}
             score = severity_score.get(cve_info["severity"], 10)
             # Production clusters get amplified score
@@ -560,7 +572,7 @@ def _get_recommended_lts(current_version: str, engine_type: str = "aurora-postgr
         aurora_ver = current_version
         if "mysql_aurora." in current_version:
             aurora_ver = current_version.split("mysql_aurora.")[-1]
-        if aurora_ver < "3.04.3":
+        if _version_tuple(aurora_ver) < _version_tuple("3.04.3"):
             return {"version": "3.04.3", "note": "MySQL 8.0 LTS release (8.0.28 compatible)", "is_major": False}
         return None  # Already at or past LTS
     else:
@@ -569,7 +581,9 @@ def _get_recommended_lts(current_version: str, engine_type: str = "aurora-postgr
         # Find LTS in same major
         for lts_ver, info in AURORA_PG_LTS_VERSIONS.items():
             lts_major = lts_ver.split(".")[0]
-            if lts_major == current_major and lts_ver > current_version:
+            # Compare numerically: as strings, "15.8" > "15.12" and a cluster on
+            # 15.12 was offered 15.8 (a downgrade) as its LTS target.
+            if lts_major == current_major and _version_tuple(lts_ver) > _version_tuple(current_version):
                 return {"version": lts_ver, "note": info["note"], "is_major": False}
         # If no same-major LTS ahead, recommend next major's LTS
         next_major = str(int(current_major) + 1)
@@ -577,6 +591,11 @@ def _get_recommended_lts(current_version: str, engine_type: str = "aurora-postgr
             if lts_ver.startswith(next_major + "."):
                 return {"version": lts_ver, "note": info["note"], "is_major": True}
         return None
+
+
+def _version_tuple(version: str) -> tuple:
+    """'15.12' -> (15, 12); non-numeric parts sort as 0."""
+    return tuple(int(p) if p.isdigit() else 0 for p in version.split("."))
 
 
 def _version_lte(v1: str, v2: str) -> bool:

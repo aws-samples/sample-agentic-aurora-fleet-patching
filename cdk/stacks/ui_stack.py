@@ -240,24 +240,28 @@ class UiStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="api.server.handler",
             code=lambda_.Code.from_asset("../.lambda-build"),
-            timeout=Duration.minutes(5),
+            # Async jobs (upgrade pipeline, analysis) get the full 15 minutes;
+            # API Gateway requests are still capped at 29 s by API Gateway.
+            timeout=Duration.minutes(15),
             memory_size=512,
             vpc=vpc,
             vpc_subnets=private_subnets,
             security_groups=[aurora_sg],
             environment=lambda_env,
+            # Never auto-retry async jobs: a retried upgrade pipeline would try to
+            # create a second Blue/Green deployment for the same cluster.
+            retry_attempts=0,
         )
 
         # ─── IAM Permissions ──────────────────────────────────────────────
         # This list previously also granted rds:ModifyDBInstance,
         # rds:DeleteDBClusterSnapshot, rds:AddTagsToResource,
         # rds:RemoveTagsFromResource, rds:CreateDBClusterParameterGroup, and
-        # rds:CopyDBClusterParameterGroup. None of those 6 actions have any
-        # call site in agents/, api/server.py, traffic-gen/, or tests/ —
-        # confirmed by tracing every boto3 RDS call in the codebase, including
-        # dispatch tables (_EXEC_ACTIONS in api/server.py) for indirect calls.
-        # Removed as unused attack surface, matching the same cleanup already
-        # done in cdk/cross_account_role.yaml for the identical reason.
+        # rds:CopyDBClusterParameterGroup. None of those 6 is called directly by
+        # the code. rds:AddTagsToResource and rds:ModifyDBInstance are, however,
+        # checked implicitly by RDS during Blue/Green create/switchover; they are
+        # intentionally not granted by default and are documented as an opt-in
+        # (README "Enabling Blue/Green execution"). The other 4 stay removed.
         api_fn.add_to_role_policy(iam.PolicyStatement(
             actions=[
                 "rds:DescribeDBClusters",
@@ -288,6 +292,11 @@ class UiStack(Stack):
             ],
             resources=["*"],
         ))
+        # Blue/Green execution needs additional permissions that this stack does
+        # NOT grant by default (RDS checks them on the caller's behalf during
+        # create/switchover/delete, and for the tagged pre-upgrade snapshot).
+        # See README "Enabling Blue/Green execution" and
+        # docs/iam/blue-green-execution-policy.json to opt in.
         api_fn.add_to_role_policy(iam.PolicyStatement(
             actions=["bedrock:InvokeModel"],
             resources=["*"],

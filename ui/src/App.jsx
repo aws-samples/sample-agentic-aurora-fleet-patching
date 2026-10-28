@@ -1483,7 +1483,9 @@ function AdvisorPanel({ clusters }) {
     setLoading(true)
     setResult(null)
     try {
-      const body = { cluster_id: selectedCluster, region: 'us-east-2' }
+      // Use the cluster's own Region (from the fleet scan), not a fixed one.
+      const clusterRegion = (clusters.find(c => c.cluster_id === selectedCluster) || {}).region || ''
+      const body = { cluster_id: selectedCluster, region: clusterRegion }
       if (mode === 'diagnose' && error) body.error = error
       if (mode === 'ask' && question) body.question = question
       const res = await fetch(`${API}/advisor/recommend`, {
@@ -2115,7 +2117,8 @@ export default function App() {
   const handleScan = async () => {
     setScanning(true)
     try {
-      const res = await fetch(`${API}/fleet/scan`, { method: 'POST', headers: authHeaders(), body: JSON.stringify(["us-east-2"]) })
+      // [] = let the backend use its configured SCAN_REGIONS (or its own Region).
+      const res = await fetch(`${API}/fleet/scan`, { method: 'POST', headers: authHeaders(), body: JSON.stringify([]) })
       if (!res.ok) throw new Error(`Scan failed: ${res.status}`)
       const data = await res.json()
       setClusters(data.clusters || [])
@@ -2150,7 +2153,7 @@ export default function App() {
         body: JSON.stringify({
           cluster_id: historyItem.cluster_id,
           target_version: historyItem.target_version,
-          region: historyItem.region || 'us-east-2',
+          region: historyItem.region || (clusters.find(c => c.cluster_id === historyItem.cluster_id) || {}).region || '',
           environment: historyItem.environment || 'dev',
           strategy: historyItem.strategy || 'blue_green',
           reason: historyItem.reason || 'retry',
@@ -2214,7 +2217,11 @@ export default function App() {
   const handleSwitchover = async (deploymentId, region) => {
     if (!confirm('Execute switchover? The upgraded cluster becomes the new primary.')) return
     try {
-      await fetch(`${API}/upgrades/switchover`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ deployment_id: deploymentId, region }) })
+      const res = await fetch(`${API}/upgrades/switchover`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ deployment_id: deploymentId, region }) })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `HTTP ${res.status}`)
+      }
       showToast('Switchover initiated')
       setTimeout(fetchUpgrades, 2000)
     } catch (e) {
@@ -2306,7 +2313,8 @@ export default function App() {
   const handleDiscover = async () => {
     setDiscoverLoading(true)
     try {
-      const res = await fetch(`${API}/deployments/discover`, { method: 'POST', headers: authHeaders(), body: JSON.stringify(["us-east-2"]) })
+      // [] = let the backend use its configured SCAN_REGIONS (or its own Region).
+      const res = await fetch(`${API}/deployments/discover`, { method: 'POST', headers: authHeaders(), body: JSON.stringify([]) })
       if (!res.ok) throw new Error(`Discovery failed: ${res.status}`)
       const data = await res.json()
       showToast(`Discovered ${data.total || 0} deployment(s) from AWS`)

@@ -248,14 +248,27 @@ def create_pre_upgrade_snapshot(cluster_id: str, region: str) -> dict:
     snapshot_id = f"{cluster_id}-pre-upgrade-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}"
 
     try:
-        client.create_db_cluster_snapshot(
-            DBClusterIdentifier=cluster_id,
-            DBClusterSnapshotIdentifier=snapshot_id,
-            Tags=[
-                {"Key": "Purpose", "Value": "pre-upgrade-snapshot"},
-                {"Key": "CreatedBy", "Value": "aurora-patch-agent"},
-            ],
-        )
+        try:
+            client.create_db_cluster_snapshot(
+                DBClusterIdentifier=cluster_id,
+                DBClusterSnapshotIdentifier=snapshot_id,
+                Tags=[
+                    {"Key": "Purpose", "Value": "pre-upgrade-snapshot"},
+                    {"Key": "CreatedBy", "Value": "aurora-patch-agent"},
+                ],
+            )
+        except Exception as e:
+            # Tagging needs rds:AddTagsToResource, which the default deployment
+            # doesn't grant (README "Enabling Blue/Green execution"). The
+            # snapshot itself is what matters as a rollback anchor, so retry
+            # without our tags rather than failing the upgrade.
+            if "AddTagsToResource" not in str(e):
+                raise
+            logger.warning(f"Tagging not permitted; creating untagged snapshot for {cluster_id}")
+            client.create_db_cluster_snapshot(
+                DBClusterIdentifier=cluster_id,
+                DBClusterSnapshotIdentifier=snapshot_id,
+            )
 
         # Wait for snapshot to become available (with timeout)
         waiter = client.get_waiter("db_cluster_snapshot_available")

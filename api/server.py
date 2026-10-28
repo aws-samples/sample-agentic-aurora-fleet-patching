@@ -32,7 +32,7 @@ from agents.discovery.handler import discover_clusters, find_available_upgrades,
 from agents.assessment.handler import handler as assess_handler, assess_cluster, _deserialize_target
 from agents.execution.handler import create_blue_green, check_deployment_status, execute_switchover, delete_deployment, execute_inplace_upgrade
 from agents.rollback.handler import execute_rollback
-from agents.execution.preflight import run_preflight_checks, PREFLIGHT_CONFIG
+from agents.execution.preflight import run_preflight_checks, create_pre_upgrade_snapshot, PREFLIGHT_CONFIG
 from agents.validation.handler import handler as validate_handler
 from agents.advisor.handler import get_advisor_recommendation
 from agents.scanner.handler import scan_fleet_urgency
@@ -72,6 +72,16 @@ _API_AUTH_TOKEN = os.environ.get("API_AUTH_TOKEN", "")
 _ALLOW_UNAUTHENTICATED = os.environ.get("ALLOW_UNAUTHENTICATED", "").lower() == "true"
 _AUTH_EXEMPT_PREFIXES = ("/docs", "/openapi.json", "/redoc", "/static", "/health")
 _MUTATING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+@app.middleware("http")
+async def _refresh_state_per_request(request, call_next):
+    # One consistent GetItem per request keeps this container's view current
+    # with writes made by other containers (see _refresh_state). Registered
+    # before the auth middleware so that auth is the outer layer and rejects
+    # unauthenticated mutations before any state is read.
+    _refresh_state()
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -197,11 +207,124 @@ def _load_state() -> dict:
     return {**_DEFAULT_STATE}
 
 
+def _read_stored_state() -> dict | None:
+    """Read the latest persisted state from DynamoDB (None if unavailable)."""
+    table = _ddb_table()
+    if not table:
+        return None
+    try:
+        resp = table.get_item(Key={"pk": "STATE", "sk": "current"}, ConsistentRead=True)
+    except Exception as e:
+        logger.warning(f"DynamoDB state read failed: {e}")
+        return None
+    if "Item" not in resp:
+        return None
+    state = json.loads(resp["Item"]["data"])
+    state.setdefault("history", [])
+    _migrate_terminal_to_history(state)
+    _purge_expired_history(state)
+    return state
+
+
+# ─── Multi-container state consistency ─────────────────────────────
+# Lambda runs many execution environments ("containers") in parallel, each with
+# its own in-memory _state. To keep them consistent:
+#   1. _refresh_state() reloads from DynamoDB at the start of every request/job.
+#   2. _save_state() re-reads the stored state and three-way merges it with this
+#      container's changes (relative to what it loaded), so a container only
+#      overwrites the keys it actually changed instead of the whole document.
+_MISSING = object()
+
+
+def _canon(value) -> str:
+    return "\x00missing" if value is _MISSING else json.dumps(value, sort_keys=True, default=str)
+
+
+def _snapshot(value):
+    return json.loads(json.dumps(value, default=str))
+
+
+def _merge_items(base: dict, ours: dict, theirs: dict) -> dict:
+    """Merge a dict of independent items (e.g. upgrades by cluster id).
+
+    Keeps the identity of our nested dicts so references held by long-running
+    code (such as the upgrade pipeline's `upgrade` dict) stay attached to _state.
+    """
+    out = {}
+    for key in set(base) | set(ours) | set(theirs):
+        b, o, t = base.get(key, _MISSING), ours.get(key, _MISSING), theirs.get(key, _MISSING)
+        if _canon(o) == _canon(b):
+            value = t  # we didn't change it: take the latest stored value
+            if isinstance(o, dict) and isinstance(t, dict) and o is not t:
+                o.clear()
+                o.update(t)
+                value = o
+        else:
+            value = o  # we changed it (on a real conflict, the latest writer wins)
+        if value is not _MISSING:
+            out[key] = value
+    return out
+
+
+def _merge_state(base: dict, ours: dict, theirs: dict) -> dict:
+    out = {}
+    for key in set(base) | set(ours) | set(theirs):
+        b, o, t = base.get(key, _MISSING), ours.get(key, _MISSING), theirs.get(key, _MISSING)
+        cb, co, ct = _canon(b), _canon(o), _canon(t)
+        if isinstance(o, dict) and isinstance(t, dict):
+            # Always merge item by item so nested objects keep their identity.
+            value = _merge_items(b if isinstance(b, dict) else {}, o, t)
+        elif co == cb:
+            value = t
+        elif ct == cb:
+            value = o
+        elif isinstance(o, list) and isinstance(t, list):
+            # Append-only lists (history): keep theirs plus what we added.
+            seen = {_canon(x) for x in t} | {_canon(x) for x in (b if isinstance(b, list) else [])}
+            value = list(t) + [x for x in o if _canon(x) not in seen]
+        else:
+            value = o
+        if value is not _MISSING:
+            out[key] = value
+    return out
+
+
+def _sync_preflight_windows():
+    """Point the change-window guardrail at the persisted maintenance windows."""
+    for env, w in (_state.get("maintenance_windows") or {}).items():
+        PREFLIGHT_CONFIG["change_windows"][env] = {
+            "start_hour_utc": w.get("start_hour_utc", 0),
+            "end_hour_utc": w.get("end_hour_utc", 24),
+            "days": w.get("days", []),
+            "clusters": w.get("clusters", []),
+        } if w.get("enabled", True) else None
+
+
+def _refresh_state():
+    """Reload state from DynamoDB so this container sees other containers' writes."""
+    global _state_base
+    stored = _read_stored_state()
+    if stored is None:
+        return
+    _state.clear()
+    _state.update(stored)
+    _state_base = _snapshot(_state)
+    _sync_preflight_windows()
+
+
 def _save_state():
+    global _state_base
+    table = _ddb_table()
+    if table:
+        stored = _read_stored_state()
+        if stored is not None:
+            merged = _merge_state(_state_base, _state, stored)
+            _state.clear()
+            _state.update(merged)
     state_json = json.dumps(_state, default=str)
+    _state_base = _snapshot(_state)
 
     # Save to DynamoDB
-    table = _ddb_table()
     if table:
         try:
             table.put_item(Item={
@@ -231,6 +354,8 @@ def _move_to_history(cluster_id: str):
 
 
 _state = _load_state()
+_state_base = _snapshot(_state)
+_sync_preflight_windows()
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -499,7 +624,9 @@ async def set_maintenance_window(environment: str, window: MaintenanceWindow):
 # ─────────────────────────────────────────────────────────────────
 @app.get("/api/upgrades")
 async def get_upgrades():
-    """Get all active upgrades + history."""
+    """Get all active upgrades + history (advancing them from live RDS state)."""
+    if _reconcile_active_upgrades():
+        _save_state()
     return {
         "active": _state["upgrades"],
         "history": _state.get("history", []),
@@ -616,7 +743,8 @@ async def start_upgrade(request: UpgradeRequest, background_tasks: BackgroundTas
     }
 
     _save_state()
-    background_tasks.add_task(_run_upgrade_pipeline, request)
+    if not _start_pipeline_job(request):
+        background_tasks.add_task(_run_upgrade_pipeline, request)  # local dev
     return {"status": "started", "cluster_id": cluster_id}
 
 
@@ -624,18 +752,25 @@ async def start_upgrade(request: UpgradeRequest, background_tasks: BackgroundTas
 async def trigger_switchover(request: SwitchoverRequest):
     """Manually trigger switchover for a ready deployment."""
     result = execute_switchover(request.deployment_id, request.region)
+    failed = result.get("status") == "error"
 
     for cluster_id, upgrade in _state["upgrades"].items():
         if upgrade.get("deployment_id") == request.deployment_id:
-            upgrade["status"] = "switching"
-            upgrade["steps"].append({
-                "step": "switchover",
-                "time": datetime.now(timezone.utc).isoformat(),
-                "result": result,
-            })
+            if failed:
+                # Leave the upgrade switchable so the operator can fix and retry;
+                # the recorded step carries a diagnosis (e.g. a missing IAM action).
+                _record_step(upgrade, "switchover", "failed", result=result,
+                             inputs={"deployment_id": request.deployment_id},
+                             error=result.get("message", "Switchover failed"))
+            else:
+                upgrade["status"] = "switching"
+                _record_step(upgrade, "switchover", "started", result=result,
+                             inputs={"deployment_id": request.deployment_id})
             break
 
     _save_state()
+    if failed:
+        raise HTTPException(502, result.get("message", "Switchover failed"))
     return result
 
 
@@ -848,6 +983,25 @@ async def delete_old_cluster(cluster_id: str, request: dict):
 # Remediation knowledge base — maps known errors to fix instructions
 # ─────────────────────────────────────────────────────────────────
 _REMEDIATION_MAP = [
+    # Order matters (first match wins). AWS's logical-replication message also
+    # contains "parameter group", so the specific entry must come first.
+    {
+        "pattern": "SourceClusterNotSupportedFault",
+        "match_key": "logical replication",
+        "diagnosis": "Blue/Green deployment requires rds.logical_replication=1 in the cluster parameter group.",
+        "remediation": (
+            "Associate the cluster with a custom DB cluster parameter group that sets "
+            "rds.logical_replication=1 (aws rds modify-db-cluster --db-cluster-identifier <cluster> "
+            "--db-cluster-parameter-group-name <group> --apply-immediately), then reboot the writer "
+            "instance so it takes effect. If the cluster already uses such a group, only the reboot "
+            "is needed. Then retry the upgrade."
+        ),
+        # Changing a cluster's parameter group and rebooting its writer is an
+        # operator decision; apply-fix does not automate it.
+        "auto_fixable": False,
+        "fix_action": "manual",
+        "fix_details": {"description": "Enable logical replication in the cluster parameter group, then reboot the writer"},
+    },
     {
         "pattern": "SourceClusterNotSupportedFault",
         "match_key": "parameter group",
@@ -856,15 +1010,6 @@ _REMEDIATION_MAP = [
         "auto_fixable": True,
         "fix_action": "reboot",
         "fix_details": {"description": "Reboot writer instance to sync parameter group"},
-    },
-    {
-        "pattern": "SourceClusterNotSupportedFault",
-        "match_key": "logical replication",
-        "diagnosis": "Blue/Green deployment requires rds.logical_replication=1 in the cluster parameter group.",
-        "remediation": "Create/modify a custom cluster parameter group with rds.logical_replication=1, apply it to the cluster, then reboot the writer.",
-        "auto_fixable": True,
-        "fix_action": "parameter_group",
-        "fix_details": {"description": "Enable logical replication in cluster parameter group"},
     },
     {
         "pattern": "manage-master-user-password",
@@ -1348,6 +1493,25 @@ async def _run_upgrade_pipeline(request: UpgradeRequest):
         else:
             _record_step(upgrade, "preflight", "skipped",
                          inputs={"reason": "Pre-flight already ran in guardrails panel"})
+            # The guardrails panel runs its checks in dry-run mode, so the
+            # rollback-anchor snapshot it promises still has to be taken here.
+            upgrade["status"] = "snapshotting"
+            _save_state()
+            t0 = _time.time()
+            snap = create_pre_upgrade_snapshot(cluster_id, request.region)
+            elapsed = round(_time.time() - t0, 1)
+            if not snap.get("passed"):
+                _record_step(upgrade, "pre_upgrade_snapshot", "failed", result=snap,
+                             inputs={"cluster_id": cluster_id},
+                             error=snap.get("reason"), duration_sec=elapsed)
+                upgrade["status"] = "preflight_failed"
+                upgrade["error"] = snap.get("reason")
+                _save_state()
+                return
+            upgrade["snapshot_id"] = snap.get("snapshot_id")
+            _record_step(upgrade, "pre_upgrade_snapshot", "success", result=snap,
+                         inputs={"cluster_id": cluster_id}, duration_sec=elapsed)
+            _save_state()
 
         # Step 2: Execute upgrade based on strategy
         strategy = request.strategy or "blue_green"
@@ -1382,6 +1546,11 @@ async def _run_upgrade_pipeline(request: UpgradeRequest):
             _save_state()
             t0 = _time.time()
             for _ in range(120):  # up to 60 min
+                if _pipeline_time_left() < 60:
+                    # Out of Lambda budget: GET /api/upgrades finishes the job
+                    # by reconciling with RDS (_reconcile_active_upgrades).
+                    logger.info(f"Handing off in-place wait for {cluster_id} to reconciliation")
+                    return
                 await asyncio.sleep(30)
                 try:
                     client = rds_client(request.region)
@@ -1461,6 +1630,11 @@ async def _run_upgrade_pipeline(request: UpgradeRequest):
         poll_count = 0
         t0 = _time.time()
         while True:
+            if _pipeline_time_left() < 60:
+                # Green builds usually outlast a Lambda invocation; reconciliation
+                # in GET /api/upgrades moves this to ready/awaiting_approval.
+                logger.info(f"Handing off Blue/Green wait for {cluster_id} to reconciliation")
+                return
             await asyncio.sleep(30)
             poll_count += 1
             status = check_deployment_status(deployment_id, request.region)
@@ -1560,6 +1734,137 @@ async def _run_upgrade_pipeline(request: UpgradeRequest):
         if upgrade["status"] in ("complete", "failed", "preflight_failed", "validation_failed", "switchover_failed"):
             _move_to_history(cluster_id)
         _save_state()
+
+
+# The upgrade pipeline runs as an async self-invoked job (not a FastAPI
+# BackgroundTask: Mangum holds the HTTP response until background tasks finish,
+# which made /api/upgrades/start time out at API Gateway's 29 s limit). A job has
+# the Lambda's full timeout; waits longer than that are handed to
+# _reconcile_active_upgrades, which GET /api/upgrades runs on every UI poll.
+_PIPELINE_BUDGET_SEC = int(os.environ.get("PIPELINE_BUDGET_SEC", str(13 * 60)))
+_pipeline_deadline: float | None = None
+
+
+def _pipeline_time_left() -> float:
+    import time as _time
+    return float("inf") if _pipeline_deadline is None else _pipeline_deadline - _time.time()
+
+
+def _upgrade_pipeline_worker(payload: dict) -> dict:
+    import time as _time
+    global _pipeline_deadline
+    _pipeline_deadline = _time.time() + _PIPELINE_BUDGET_SEC
+    # Don't use asyncio.run(): it closes the loop and unsets the thread's event
+    # loop, and the next API request in this warm container then fails inside
+    # Mangum with "There is no current event loop". Reuse (or create and keep)
+    # the thread's loop instead.
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("closed")
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_run_upgrade_pipeline(UpgradeRequest(**payload)))
+    finally:
+        _pipeline_deadline = None
+    return {"cluster_id": payload.get("cluster_id")}
+
+
+_JOB_WORKERS["upgrade_pipeline"] = _upgrade_pipeline_worker
+
+
+def _start_pipeline_job(request: "UpgradeRequest") -> bool:
+    """Start the pipeline as an async Lambda job. False when not on Lambda."""
+    if not _LAMBDA_FN_NAME:
+        return False
+    job_id = _create_job("upgrade_pipeline", request.model_dump())
+    try:
+        boto3.client("lambda").invoke(
+            FunctionName=_LAMBDA_FN_NAME,
+            InvocationType="Event",
+            Payload=json.dumps({"__job__": job_id}).encode(),
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"Async pipeline dispatch failed ({e}); running in-request")
+        return False
+
+
+def _switchover_never_started(upgrade: dict, grace_sec: int = 120) -> bool:
+    """True if the last switchover request is older than grace_sec (RDS still AVAILABLE)."""
+    attempts = [s for s in upgrade.get("steps", []) if s.get("step") == "switchover"]
+    if not attempts:
+        return True
+    try:
+        started = datetime.fromisoformat(attempts[-1]["time"])
+    except (KeyError, ValueError):
+        return True
+    return (datetime.now(timezone.utc) - started).total_seconds() > grace_sec
+
+
+def _reconcile_active_upgrades() -> bool:
+    """Advance active upgrades from live RDS state. Returns True if anything changed.
+
+    Covers the waits a single Lambda invocation can't: Blue/Green green builds
+    (provisioning -> ready/awaiting_approval), switchovers (switching -> complete),
+    and long in-place upgrades (waiting -> complete).
+    """
+    changed = False
+    for cluster_id, upgrade in list(_state.get("upgrades", {}).items()):
+        status = upgrade.get("status")
+        region = upgrade.get("region") or os.environ.get("AWS_REGION", "")
+        try:
+            if upgrade.get("deployment_id") and status in ("provisioning", "switching"):
+                dep = check_deployment_status(upgrade["deployment_id"], region)
+                aws_status = dep.get("status")
+                if status == "provisioning" and dep.get("ready_for_switchover"):
+                    prod = (upgrade.get("environment") or "").lower() in ("production", "prod")
+                    upgrade["status"] = "awaiting_approval" if prod else "ready"
+                    _record_step(upgrade, "wait_green_ready", "success",
+                                 result={"final_status": aws_status, "source": "reconcile"},
+                                 inputs={"deployment_id": upgrade["deployment_id"]})
+                    changed = True
+                elif status == "switching" and aws_status == "AVAILABLE" and _switchover_never_started(upgrade):
+                    # The switchover call was accepted but RDS never started it
+                    # (or an older build ignored the error); make it retryable.
+                    prod = (upgrade.get("environment") or "").lower() in ("production", "prod")
+                    upgrade["status"] = "awaiting_approval" if prod else "ready"
+                    _record_step(upgrade, "switchover", "failed",
+                                 result={"aws_status": aws_status, "source": "reconcile"},
+                                 error="Switchover did not start; check the previous step's error and retry")
+                    changed = True
+                elif status == "switching" and aws_status == "SWITCHOVER_COMPLETED":
+                    _record_step(upgrade, "switchover_complete", "success",
+                                 result={"status": aws_status, "source": "reconcile"},
+                                 inputs={"deployment_id": upgrade["deployment_id"]})
+                    upgrade["status"] = "complete"
+                    upgrade["completed_at"] = datetime.now(timezone.utc).isoformat()
+                    _move_to_history(cluster_id)
+                    changed = True
+                elif aws_status in ("INVALID_CONFIGURATION", "SWITCHOVER_FAILED", "not_found"):
+                    error_msg = f"Blue/Green deployment status: {aws_status}"
+                    _record_step(upgrade, "wait_green_ready" if status == "provisioning" else "switchover_complete",
+                                 "failed", result=dep, error=error_msg)
+                    upgrade["status"] = "failed" if status == "provisioning" else "switchover_failed"
+                    upgrade["error"] = error_msg
+                    _move_to_history(cluster_id)
+                    changed = True
+            elif status in ("upgrading_inplace", "waiting_inplace"):
+                cluster = rds_client(region).describe_db_clusters(
+                    DBClusterIdentifier=cluster_id)["DBClusters"][0]
+                if cluster["Status"] == "available" and cluster["EngineVersion"] == upgrade.get("target_version"):
+                    _record_step(upgrade, "wait_available", "success",
+                                 result={"status": cluster["Status"], "version": cluster["EngineVersion"],
+                                         "source": "reconcile"})
+                    upgrade["status"] = "complete"
+                    upgrade["completed_at"] = datetime.now(timezone.utc).isoformat()
+                    _move_to_history(cluster_id)
+                    changed = True
+        except Exception as e:
+            logger.warning(f"Reconcile failed for {cluster_id}: {e}")
+    return changed
 
 
 def _synthesize_steps_from_aws(aws_status: str, create_iso: str, dep: dict) -> list:
@@ -1724,8 +2029,7 @@ def _analyze_worker(payload: dict) -> dict:
         region=payload.get("region", ""),
     )
     # Cache analysis result (reload state so we don't clobber concurrent writes).
-    global _state
-    _state = _load_state()
+    _refresh_state()
     _state.setdefault("analyses", {})[payload["cluster_id"]] = result
     _save_state()
     return result
@@ -2403,6 +2707,7 @@ try:
         # events carry {"__job__": <id>} and are NOT API Gateway requests, so we
         # run the job directly and skip Mangum/ASGI routing entirely.
         if isinstance(event, dict) and event.get("__job__"):
+            _refresh_state()  # jobs bypass the HTTP middleware
             _run_job(event["__job__"])
             return {"status": "done", "job_id": event["__job__"]}
         return _mangum_handler(event, context)
