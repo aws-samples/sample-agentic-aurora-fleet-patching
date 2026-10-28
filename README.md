@@ -714,6 +714,12 @@ cd api && uvicorn server:app --port 8000 --reload
 cd ui && npm run dev
 ```
 
+> The UI uses Vite 5. Open advisories for `vite` and its bundled `esbuild`
+> affect the **development server** (`npm run dev`) only; fixing them requires a
+> major Vite upgrade. The deployed UI is a static build (`npm run build`) served
+> by the Lambda function and doesn't run the dev server. Run `npm run dev` only
+> on `localhost`, never on a shared network.
+
 ## Updating Deployed Lambda (without CDK)
 
 When CDK doesn't detect code changes:
