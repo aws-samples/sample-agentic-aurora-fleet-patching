@@ -2037,25 +2037,38 @@ async def discover_deployments(regions: list[str] = None):
 # ─────────────────────────────────────────────────────────────────
 # Advisor Agent (Bedrock-powered)
 # ─────────────────────────────────────────────────────────────────
+def _advisor_worker(payload: dict) -> dict:
+    """Bedrock advisor call — runs in an async job to dodge the 29s gateway limit."""
+    context = dict(payload)
+    question = context.pop("question", None)
+    return get_advisor_recommendation(context, question=question)
+
+
+_JOB_WORKERS["advisor"] = _advisor_worker
+
+
 @app.post("/api/advisor/recommend")
 async def advisor_recommend(request: AdvisorRequest):
-    """Get AI-powered upgrade strategy recommendation or error diagnosis."""
+    """Get AI-powered upgrade strategy recommendation or error diagnosis.
+
+    Dispatched as an async job: strategy answers routinely take 25-30 s, which
+    hits API Gateway's 29 s limit. Returns {job_id, status}; poll
+    GET /api/jobs/{job_id} for the result.
+    """
     # Gather upgrade history for this cluster from state
     cluster_history = [
         h for h in _state.get("history", [])
         if h.get("cluster_id") == request.cluster_id
     ]
 
-    context = {
+    return _dispatch_job("advisor", {
         "cluster_id": request.cluster_id,
         "region": request.region,
         "error": request.error,
         "upgrade_history": cluster_history,
         "target_version": request.target_version,
-    }
-
-    result = get_advisor_recommendation(context, question=request.question)
-    return result
+        "question": request.question,
+    })
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -2747,6 +2760,20 @@ async def record_upgrade_outcome_api(request: dict):
     )
 
     return {"status": "recorded"}
+
+
+@app.middleware("http")
+async def _revalidate_html(request, call_next):
+    """Make browsers revalidate the UI page on every load.
+
+    index.html names the current hashed JS bundle. Without a Cache-Control
+    header, browsers may reuse an old copy after a redeploy and keep running
+    the previous UI against the new API. Hashed /assets/* files stay cacheable.
+    """
+    response = await call_next(request)
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 # Serve frontend

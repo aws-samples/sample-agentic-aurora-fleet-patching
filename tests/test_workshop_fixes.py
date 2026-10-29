@@ -570,3 +570,67 @@ class TestValidationLatency:
         assert validation.get_current_latency("orders-prod", "us-east-2") == pytest.approx(4.0)
         kwargs = cw.get_metric_statistics.call_args.kwargs
         assert "Statistics" not in kwargs and kwargs["ExtendedStatistics"] == ["p99"]
+
+
+class TestAdvisorRunsAsJob:
+    # Regression from the workshop run: Strategy answers took 26-29 s, so the
+    # synchronous endpoint hit API Gateway's 29 s limit and the UI showed an
+    # empty card. The advisor now runs as an async job like analyze.
+    def _client(self, table, monkeypatch, seen):
+        from fastapi.testclient import TestClient
+        table.write_stored(_base_state(history=[
+            {"cluster_id": "payments-prod", "status": "complete",
+             "started_at": server.datetime.now(server.timezone.utc).isoformat()}]))
+        monkeypatch.setattr(server, "_ALLOW_UNAUTHENTICATED", True)
+        monkeypatch.setattr(server, "_API_AUTH_TOKEN", "")
+        monkeypatch.setattr(server, "_LAMBDA_FN_NAME", "")  # run the job inline
+
+        def fake_advisor(context, question=None):
+            seen.append((context, question))
+            return {"recommended_strategy": "blue_green", "reasoning": "steady writes"}
+
+        monkeypatch.setattr(server, "get_advisor_recommendation", fake_advisor)
+        return TestClient(server.app)
+
+    def test_recommend_returns_job_and_result_is_pollable(self, table, monkeypatch):
+        seen = []
+        client = self._client(table, monkeypatch, seen)
+        started = client.post("/api/advisor/recommend",
+                              json={"cluster_id": "payments-prod", "region": "us-east-2"})
+        assert started.status_code == 200, started.text
+        body = started.json()
+        assert body.get("job_id") and "recommended_strategy" not in body
+        job = client.get(f"/api/jobs/{body['job_id']}").json()
+        assert job["status"] == "complete"
+        assert job["result"]["recommended_strategy"] == "blue_green"
+        context, question = seen[0]
+        assert context["cluster_id"] == "payments-prod" and question is None
+        assert [h["cluster_id"] for h in context["upgrade_history"]] == ["payments-prod"]
+
+    def test_question_is_passed_to_the_advisor(self, table, monkeypatch):
+        seen = []
+        client = self._client(table, monkeypatch, seen)
+        client.post("/api/advisor/recommend",
+                    json={"cluster_id": "catalog-prod", "region": "us-east-2", "question": "Why?"})
+        context, question = seen[0]
+        assert question == "Why?" and "question" not in context
+
+
+class TestUiPageRevalidates:
+    # Regression from the workshop run: after the agent was redeployed, the
+    # browser kept the old index.html (no Cache-Control) and ran the previous UI
+    # against the new API, showing an empty AI Advisor card.
+    def test_index_html_is_no_cache(self, table):
+        from fastapi.testclient import TestClient
+        if not server.ui_path.exists():
+            pytest.skip("ui/dist not built")
+        table.write_stored(_base_state())
+        res = TestClient(server.app).get("/")
+        assert res.status_code == 200 and res.headers["content-type"].startswith("text/html")
+        assert res.headers.get("cache-control") == "no-cache"
+
+    def test_api_responses_are_unchanged(self, table):
+        from fastapi.testclient import TestClient
+        table.write_stored(_base_state())
+        res = TestClient(server.app).get("/api/health")
+        assert res.status_code == 200 and "cache-control" not in res.headers

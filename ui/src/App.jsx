@@ -38,7 +38,7 @@ function authHeaders(extra = {}) {
   return headers
 }
 
-// Some endpoints (analyze, version-drift) run slow Bedrock work as async jobs to
+// Some endpoints (analyze, version-drift, advisor) run slow Bedrock work as async jobs to
 // avoid API Gateway's 29s timeout. They return {job_id, status}; we poll
 // /api/jobs/{id} until it completes. If a legacy synchronous result comes back
 // (no job_id), we just return it as-is.
@@ -1488,12 +1488,10 @@ function AdvisorPanel({ clusters }) {
       const body = { cluster_id: selectedCluster, region: clusterRegion }
       if (mode === 'diagnose' && error) body.error = error
       if (mode === 'ask' && question) body.question = question
-      const res = await fetch(`${API}/advisor/recommend`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify(body),
-      })
-      setResult(await res.json())
+      // Runs as an async job (answers can exceed API Gateway's 29 s limit).
+      const data = await dispatchAndPoll(`${API}/advisor/recommend`, body)
+      const known = data && (data.recommended_strategy || data.root_cause || data.answer || data.error)
+      setResult(known ? data : { error: 'The advisor returned no answer. Try again.' })
     } catch (e) {
       setResult({ error: e.message })
     } finally {
