@@ -1,6 +1,6 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: MIT-0
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, '')
 const API = `${BASE}/api`
@@ -2074,12 +2074,14 @@ export default function App() {
     }
   }, [])
 
+  const upgradesLoaded = useRef(false)
   const fetchUpgrades = useCallback(async () => {
     try {
       const res = await fetch(`${API}/upgrades`)
       const data = await res.json()
       setUpgrades(data.active || data)
       setHistory(data.history || [])
+      upgradesLoaded.current = true
     } catch (e) {
       showToast(`Failed to load upgrades: ${e.message}`, 'error')
     }
@@ -2114,6 +2116,20 @@ export default function App() {
 
   useEffect(() => { if (clusters.length > 0 && !secScan) runSecurityScan() }, [clusters.length])
 
+  // When an upgrade finishes, the backend records the new engine version in
+  // the fleet. Reload the fleet and rerun the security scan so the patched
+  // cluster's CVE badge and Patch CVE button clear without a manual rescan.
+  const completedRuns = useRef(null)
+  useEffect(() => {
+    if (!upgradesLoaded.current) return // ignore the empty initial state
+    const done = history.filter(h => h.status === 'complete').length
+    const previous = completedRuns.current
+    completedRuns.current = done
+    if (previous !== null && done > previous) {
+      fetchFleet().then(() => runSecurityScan())
+    }
+  }, [history, fetchFleet, runSecurityScan])
+
   const handleScan = async () => {
     setScanning(true)
     try {
@@ -2124,6 +2140,9 @@ export default function App() {
       setClusters(data.clusters || [])
       setLastScan(data.last_scan)
       showToast(`Found ${(data.clusters || []).length} clusters`)
+      // Versions may have changed (e.g. after an upgrade): refresh the CVE
+      // badges and Patch CVE buttons, which come from the security scan.
+      runSecurityScan()
     } catch (e) {
       showToast(`Scan failed: ${e.message}`, 'error')
     } finally {

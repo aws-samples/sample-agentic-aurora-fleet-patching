@@ -97,6 +97,40 @@ class TestMultiContainerState:
         server._save_state()
         assert sorted(h["cluster_id"] for h in table.stored()["history"]) == ["a", "b"]
 
+    def test_same_run_archived_by_two_containers_is_kept_once(self, table):
+        # Regression from the workshop run: the pipeline worker and a
+        # GET /api/upgrades reconcile both archived orders-dev, 0.18 s apart,
+        # and the History tab showed the run twice.
+        started = server.datetime.now(server.timezone.utc).isoformat()
+        table.write_stored(_base_state(upgrades={
+            "orders-dev": _upgrade("orders-dev", "waiting_inplace", started_at=started)}))
+        server._refresh_state()  # container A (pipeline worker)
+
+        other = table.stored()  # container B archives the run first
+        run = other["upgrades"].pop("orders-dev")
+        run.update(status="complete", completed_at=server.datetime.now(server.timezone.utc).isoformat())
+        other["history"].append(run)
+        table.write_stored(other)
+
+        server._state["upgrades"]["orders-dev"]["status"] = "complete"
+        server._move_to_history("orders-dev")  # A archives it too
+        server._save_state()
+
+        history = table.stored()["history"]
+        assert [h["cluster_id"] for h in history] == ["orders-dev"]
+        assert "orders-dev" not in table.stored()["upgrades"]
+
+    def test_existing_duplicate_history_is_cleaned_on_load(self, table):
+        t0 = server.datetime.now(server.timezone.utc)
+        iso = lambda secs: (t0 + server.timedelta(seconds=secs)).isoformat()  # noqa: E731
+        run = {"cluster_id": "orders-dev", "status": "complete", "started_at": iso(0)}
+        table.write_stored(_base_state(history=[
+            {**run, "completed_at": iso(300)}, {**run, "completed_at": iso(300.2)},
+            {"cluster_id": "orders-dev", "status": "complete", "started_at": iso(600), "completed_at": iso(900)},
+        ]))
+        server._refresh_state()
+        assert len(server._state["history"]) == 2
+
     def test_pipeline_upgrade_reference_stays_live_across_merges(self, table):
         table.write_stored(_base_state(upgrades={"orders-prod": _upgrade("orders-prod", "provisioning")}))
         server._refresh_state()
@@ -187,6 +221,82 @@ class TestReconcile:
         monkeypatch.setattr(server, "rds_client", lambda region: rds)
         assert server._reconcile_active_upgrades() is True
         assert server._state["history"][-1]["cluster_id"] == "orders-dev"
+
+
+def _fleet_cluster(cluster_id, version, environment):
+    return {"cluster_id": cluster_id, "engine_version": version, "engine_type": "aurora-postgresql",
+            "environment": environment, "region": "us-east-2", "upgrade_available": True,
+            "target_version": "15.19", "available_versions": ["15.19"]}
+
+
+def _cve_ids(cluster):
+    return {c.get("cve_id") for c in _assess_urgency(cluster)["cve_exposure"]}
+
+
+class TestCveClearsAfterPatch:
+    # Regression from the workshop run: after orders-dev and orders-prod were
+    # patched 15.10 -> 15.19, the security scan still reported CVE-2025-1094
+    # because it reads the stored fleet, which only a fleet scan refreshed.
+    def test_precondition_15_10_is_exposed(self):
+        assert "CVE-2025-1094" in _cve_ids(_fleet_cluster("orders-dev", "15.10", "dev"))
+
+    def test_inplace_completion_updates_fleet_and_clears_cve(self, table):
+        table.write_stored(_base_state(
+            clusters=[_fleet_cluster("orders-dev", "15.10", "dev")],
+            upgrades={"orders-dev": _upgrade("orders-dev", "complete", strategy="in_place",
+                                             environment="dev")}))
+        server._refresh_state()  # load archives the completed run
+        server._save_state()
+        cluster = table.stored()["clusters"][0]
+        assert cluster["engine_version"] == "15.19"
+        assert cluster["upgrade_available"] is False and cluster["target_version"] is None
+        assert "CVE-2025-1094" not in _cve_ids(cluster)
+
+    def test_switchover_completion_updates_fleet_and_clears_cve(self, table, monkeypatch):
+        table.write_stored(_base_state(
+            clusters=[_fleet_cluster("orders-prod", "15.10", "production"),
+                      _fleet_cluster("orders-dev", "15.10", "dev")],
+            upgrades={"orders-prod": _upgrade("orders-prod", "switching", deployment_id="bgd-1")}))
+        server._refresh_state()
+        monkeypatch.setattr(server, "check_deployment_status",
+                            lambda dep, region: {"status": "SWITCHOVER_COMPLETED", "ready_for_switchover": False})
+        server._reconcile_active_upgrades()
+        server._save_state()
+        by_id = {c["cluster_id"]: c for c in table.stored()["clusters"]}
+        assert by_id["orders-prod"]["engine_version"] == "15.19"
+        assert "CVE-2025-1094" not in _cve_ids(by_id["orders-prod"])
+        # Clusters that weren't upgraded keep their version and exposure.
+        assert by_id["orders-dev"]["engine_version"] == "15.10"
+        assert "CVE-2025-1094" in _cve_ids(by_id["orders-dev"])
+
+    def test_failed_upgrade_leaves_fleet_version_alone(self, table):
+        table.write_stored(_base_state(
+            clusters=[_fleet_cluster("orders-dev", "15.10", "dev")],
+            upgrades={"orders-dev": _upgrade("orders-dev", "failed", environment="dev")}))
+        server._refresh_state()
+        server._move_to_history("orders-dev")
+        server._save_state()
+        assert table.stored()["clusters"][0]["engine_version"] == "15.10"
+
+    def test_agent_scan_endpoint_reports_no_cve_after_patch(self, table, monkeypatch):
+        from fastapi.testclient import TestClient
+        import agents.scanner.handler as scanner
+        import shared.cve_cache
+        # Keep the scan offline: static CVE list only, no NVD/bulletins/Health/Bedrock.
+        monkeypatch.setattr(shared.cve_cache, "get_cves_with_fallback", lambda fetch, static: dict(static))
+        monkeypatch.setattr(scanner, "_fetch_live_cves", lambda: {})
+        monkeypatch.setattr(scanner, "_fetch_aws_security_bulletins", lambda region="": [])
+        monkeypatch.setattr(scanner, "_check_aws_security_notifications", lambda region="": [])
+        monkeypatch.setattr(scanner, "_generate_fleet_summary", lambda results: {})
+        monkeypatch.setattr(server, "_ALLOW_UNAUTHENTICATED", True)
+        monkeypatch.setattr(server, "_API_AUTH_TOKEN", "")
+        table.write_stored(_base_state(
+            clusters=[_fleet_cluster("orders-dev", "15.10", "dev")],
+            upgrades={"orders-dev": _upgrade("orders-dev", "complete", environment="dev")}))
+        res = TestClient(server.app).post("/api/agent/scan")
+        assert res.status_code == 200, res.text
+        exposure = res.json()["clusters"][0]["cve_exposure"]
+        assert all(c.get("cve_id") != "CVE-2025-1094" for c in exposure)
 
 
 class TestSwitchover:

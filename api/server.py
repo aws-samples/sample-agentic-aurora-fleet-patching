@@ -141,20 +141,74 @@ _DEFAULT_STATE = {
 }
 
 
+def _history_key(entry) -> str:
+    """Identity of a history entry: one upgrade run = one cluster + start time.
+
+    Two containers can archive the same run (e.g. the pipeline worker and a
+    GET /api/upgrades reconcile) with slightly different completed_at values,
+    so content equality is not enough to detect duplicates.
+    """
+    if isinstance(entry, dict) and entry.get("cluster_id") and entry.get("started_at"):
+        return f"{entry['cluster_id']}\x00{entry['started_at']}"
+    return json.dumps(entry, sort_keys=True, default=str)
+
+
+def _dedupe_history(history: list) -> list:
+    """Drop repeated runs, keeping the first archived copy of each."""
+    seen, out = set(), []
+    for h in history:
+        key = _history_key(h)
+        if key not in seen:
+            seen.add(key)
+            out.append(h)
+    return out
+
+
 def _purge_expired_history(state: dict):
-    """Remove history entries older than TTL."""
+    """Remove history entries older than TTL and duplicate copies of a run."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=HISTORY_TTL_DAYS)
     history = state.get("history", [])
-    state["history"] = [
+    state["history"] = _dedupe_history([
         h for h in history
         if datetime.fromisoformat(h.get("completed_at", h.get("started_at", "2000-01-01T00:00:00+00:00"))) > cutoff
-    ]
+    ])
 
 
 _TERMINAL_STATUSES = ("complete", "failed", "preflight_failed", "validation_failed", "switchover_failed", "cancelled", "rolled_back")
 
 # Only auto-migrate these to history — keep failed items visible in active for retry
 _AUTO_ARCHIVE_STATUSES = ("complete", "cancelled", "rolled_back")
+
+
+def _apply_completed_upgrade(state: dict, upgrade: dict):
+    """Record a completed upgrade's new version in the stored fleet.
+
+    The security scan (/api/agent/scan) reads the stored cluster list, so
+    without this a patched cluster keeps reporting the CVEs it was patched
+    for until someone runs a fleet scan. Blue/Green keeps the cluster
+    identifier after switchover, so the same update covers both strategies.
+    """
+    if upgrade.get("status") != "complete" or not upgrade.get("target_version"):
+        return
+    for c in state.get("clusters", []):
+        if c.get("cluster_id") != upgrade.get("cluster_id"):
+            continue
+        if upgrade.get("region") and c.get("region") and c["region"] != upgrade["region"]:
+            continue
+        c["engine_version"] = upgrade["target_version"]
+        # The target was just reached; the next fleet scan finds the next one.
+        c["upgrade_available"] = False
+        c["target_version"] = None
+        c["available_versions"] = []
+        try:
+            from agents.scanner.handler import _get_lts_info, _get_recommended_lts
+            engine_type = c.get("engine_type", "aurora-postgresql")
+            c["lts_info"] = _get_lts_info(c["engine_version"], engine_type)
+            c["is_lts"] = c["lts_info"] is not None
+            c["target_is_lts"] = False
+            c["recommended_lts"] = _get_recommended_lts(c["engine_version"], engine_type)
+        except Exception as e:
+            logger.warning(f"LTS refresh failed for {c.get('cluster_id')}: {e}")
 
 
 def _migrate_terminal_to_history(state: dict):
@@ -164,6 +218,7 @@ def _migrate_terminal_to_history(state: dict):
         upgrade = state["upgrades"].pop(cid)
         if "completed_at" not in upgrade:
             upgrade["completed_at"] = upgrade.get("started_at", datetime.now(timezone.utc).isoformat())
+        _apply_completed_upgrade(state, upgrade)
         state["history"].append(upgrade)
 
 
@@ -280,8 +335,10 @@ def _merge_state(base: dict, ours: dict, theirs: dict) -> dict:
             value = o
         elif isinstance(o, list) and isinstance(t, list):
             # Append-only lists (history): keep theirs plus what we added.
-            seen = {_canon(x) for x in t} | {_canon(x) for x in (b if isinstance(b, list) else [])}
-            value = list(t) + [x for x in o if _canon(x) not in seen]
+            # Match entries by run identity, not content, so the same run archived
+            # by two containers (different completed_at) is kept only once.
+            seen = {_history_key(x) for x in t} | {_history_key(x) for x in (b if isinstance(b, list) else [])}
+            value = _dedupe_history(list(t) + [x for x in o if _history_key(x) not in seen])
         else:
             value = o
         if value is not _MISSING:
@@ -349,6 +406,7 @@ def _move_to_history(cluster_id: str):
         return
     upgrade = _state["upgrades"][cluster_id]
     upgrade["completed_at"] = datetime.now(timezone.utc).isoformat()
+    _apply_completed_upgrade(_state, upgrade)
     _state["history"].append(upgrade)
     del _state["upgrades"][cluster_id]
 
