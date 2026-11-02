@@ -2244,12 +2244,14 @@ async def agent_version_drift(request: VersionDriftRequest):
     })
 
 
-@app.post("/api/agent/plan")
-async def agent_plan():
-    """Planner Agent: Generate fleet-wide upgrade plan with wave scheduling."""
+def _plan_worker(payload: dict) -> dict:
+    """Slow Bedrock fleet planning — runs in an async job."""
+    # Async job invocations skip the per-request middleware, so load the
+    # latest scan/analyses written by other containers first.
+    _refresh_state()
     scan_results = _state.get("last_urgency_scan", {}).get("clusters", [])
     if not scan_results:
-        raise HTTPException(400, "No urgency scan results. Run /api/agent/scan first.")
+        raise ValueError("No urgency scan results. Run /api/agent/scan first.")
 
     analyses = list(_state.get("analyses", {}).values())
     windows = _state.get("maintenance_windows", PREFLIGHT_CONFIG["change_windows"])
@@ -2268,6 +2270,22 @@ async def agent_plan():
     return plan
 
 
+_JOB_WORKERS["plan"] = _plan_worker
+
+
+@app.post("/api/agent/plan")
+async def agent_plan():
+    """Planner Agent: Generate fleet-wide upgrade plan with wave scheduling.
+
+    Dispatched as an async job: a complete plan on Sonnet 4.6 takes ~25-30 s,
+    which hits API Gateway's 29 s limit. Returns {job_id, status}; poll
+    GET /api/jobs/{job_id} for the plan (also stored for GET /api/agent/plan).
+    """
+    if not _state.get("last_urgency_scan", {}).get("clusters"):
+        raise HTTPException(400, "No urgency scan results. Run /api/agent/scan first.")
+    return _dispatch_job("plan", {})
+
+
 @app.get("/api/agent/plan")
 async def get_current_plan():
     """Get the current fleet upgrade plan."""
@@ -2282,17 +2300,33 @@ class WaveOutcome(BaseModel):
     results: list[dict]
 
 
-@app.post("/api/agent/plan/adjust")
-async def agent_adjust_plan(outcome: WaveOutcome):
-    """Planner Agent: Adjust plan based on observed wave outcomes (agentic loop)."""
+def _plan_adjust_worker(payload: dict) -> dict:
+    """Bedrock plan adjustment — runs in an async job."""
+    _refresh_state()
     current_plan = _state.get("fleet_plan")
     if not current_plan:
-        raise HTTPException(400, "No active plan to adjust")
+        raise ValueError("No active plan to adjust")
 
-    adjusted = adjust_plan_from_outcome(current_plan, outcome.model_dump())
+    adjusted = adjust_plan_from_outcome(current_plan, payload)
     _state["fleet_plan"] = adjusted
     _save_state()
     return adjusted
+
+
+_JOB_WORKERS["plan_adjust"] = _plan_adjust_worker
+
+
+@app.post("/api/agent/plan/adjust")
+async def agent_adjust_plan(outcome: WaveOutcome):
+    """Planner Agent: Adjust plan based on observed wave outcomes (agentic loop).
+
+    Dispatched as an async job: when a wave fails, the model rewrites the
+    remaining waves, which takes ~40 s on Sonnet 4.6 (over API Gateway's 29 s
+    limit). Returns {job_id, status}; poll GET /api/jobs/{job_id}.
+    """
+    if not _state.get("fleet_plan"):
+        raise HTTPException(400, "No active plan to adjust")
+    return _dispatch_job("plan_adjust", outcome.model_dump())
 
 
 @app.post("/api/agent/run")

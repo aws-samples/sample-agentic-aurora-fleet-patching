@@ -56,7 +56,7 @@ KNOWN_CVES = {
     "CVE-2024-10977": {"severity": "MEDIUM", "affected": "<=15.8,<=16.4", "component": "libpq SSL certificate validation", "fixed_in": ["15.10", "16.6"]},
     "CVE-2024-10978": {"severity": "MEDIUM", "affected": "<=15.8,<=16.4", "component": "SET ROLE session authorization", "fixed_in": ["15.10", "16.6"]},
     "CVE-2024-7348": {"severity": "HIGH", "affected": "<=15.7,<=16.3", "component": "pg_dump race condition", "fixed_in": ["15.8", "16.4"]},
-    "CVE-2025-1094": {"severity": "HIGH", "affected": "<=15.11,<=16.7,<=17.3", "component": "PL/pgSQL SQL injection in quoting functions", "fixed_in": ["15.12", "16.8", "17.4"]},
+    "CVE-2025-1094": {"severity": "HIGH", "affected": "<=15.11,<=16.7,<=17.3", "component": "libpq quoting/escaping functions (SQL injection via psql)", "fixed_in": ["15.12", "16.8", "17.4"]},
 }
 
 # Aurora MySQL end-of-life dates

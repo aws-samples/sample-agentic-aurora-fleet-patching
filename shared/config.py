@@ -38,10 +38,11 @@ DYNAMODB_TABLE = (
     or "aurora-patch-agent-ui-state"
 )
 
-# Default to Sonnet 4.5: unlike Sonnet 5 it does not force extended thinking, so
-# it returns usable text at modest max_tokens and responds ~5x faster (~6s vs
-# ~30s), keeping synchronous endpoints under API Gateway's 29s limit.
-BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-5-20250929-v1:0")
+# Default to Sonnet 4.6. Sonnet 4.5 is Legacy on Bedrock (new accounts can't
+# enable it). Unlike Sonnet 5, Sonnet 4.6 returns plain text within modest
+# max_tokens (Sonnet 5's thinking block can use up a 1024-token budget), with
+# similar latency to Sonnet 4.5 (~11-20s for a typical advisor prompt).
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 SNS_APPROVAL_TOPIC = os.environ.get("SNS_APPROVAL_TOPIC", "")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -88,9 +89,9 @@ DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
 # ─────────────────────────────────────────────────────────────────────────────
 
 AVAILABLE_MODELS = [
-    {"id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0", "name": "Claude Sonnet 4.5", "tier": "balanced"},
-    {"id": "us.anthropic.claude-sonnet-5", "name": "Claude Sonnet 5", "tier": "advanced"},
     {"id": "us.anthropic.claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "tier": "balanced"},
+    {"id": "us.anthropic.claude-sonnet-5", "name": "Claude Sonnet 5", "tier": "advanced"},
+    {"id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0", "name": "Claude Sonnet 4.5 (legacy)", "tier": "balanced"},
     {"id": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "name": "Claude Haiku 4.5", "tier": "fast"},
     {"id": "us.anthropic.claude-opus-4-8", "name": "Claude Opus 4.8", "tier": "advanced"},
 ]

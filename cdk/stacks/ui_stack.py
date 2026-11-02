@@ -156,7 +156,7 @@ class UiStack(Stack):
         db_password = self.node.try_get_context("db_password") or ""
 
         lambda_env = {
-            "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
             "STATE_TABLE_NAME": state_table.table_name,
             "AGENT_VERSION": deploy_config.get("agent", {}).get("version", "1.0.0"),
             "STACK_NAME": self.stack_name,

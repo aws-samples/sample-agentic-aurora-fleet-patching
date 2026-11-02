@@ -67,7 +67,7 @@
   },
 
   "bedrock": {
-    "model_id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "model_id": "us.anthropic.claude-sonnet-4-6",
     "region": "",
     "_comment": "Set region if Bedrock is not available in the deployment region"
   },

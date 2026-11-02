@@ -59,14 +59,14 @@ class AuroraPatchAgentStack(Stack):
         )
 
         # Common environment variables
-        # Default model matches shared/config.py and ui_stack.py: Sonnet 4.5 is
-        # chosen deliberately (not 4.6/5) because it doesn't force extended
-        # thinking and responds fast enough to keep synchronous endpoints under
-        # API Gateway's 29s timeout. Override via the BEDROCK_MODEL_ID env var.
+        # Default model matches shared/config.py and ui_stack.py: Sonnet 4.6
+        # (Sonnet 4.5 is Legacy on Bedrock, so new accounts can't enable it).
+        # Unlike Sonnet 5 it returns plain text within modest max_tokens.
+        # Override via the BEDROCK_MODEL_ID env var.
         common_env = {
             "PATCH_STATE_TABLE": state_table.table_name,
             "SNS_APPROVAL_TOPIC": approval_topic.topic_arn,
-            "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "BEDROCK_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
         }
 
         # ─────────────────────────────────────────────────────────

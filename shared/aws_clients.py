@@ -8,11 +8,27 @@ operation. Clients are cached per region for performance.
 For cross-account operations, use shared.multi_account.get_client_for_account()
 instead of these cached clients.
 """
+import json
 import os
+import re
 import boto3
+from botocore.config import Config
 from functools import lru_cache
 
 _DEFAULT_REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1"))
+
+# Long Bedrock generations (e.g. the 8192-token version-drift response on
+# Claude Sonnet 4.6) routinely take more than botocore's default 60 s read
+# timeout, which caused a timeout + retry (~120 s) or an outright failure.
+# Callers that need this run as async jobs on the 15-minute API Lambda.
+# total_max_attempts=2 is one try plus one retry (botocore's "max_attempts"
+# counts retries only, so max_attempts=2 would mean 3 tries = 900 s worst case,
+# the whole Lambda budget). Worst case here is ~2 x 300 s.
+BEDROCK_CLIENT_CONFIG = Config(
+    read_timeout=300,
+    connect_timeout=10,
+    retries={"total_max_attempts": 2, "mode": "standard"},
+)
 
 
 @lru_cache
@@ -38,7 +54,26 @@ def bedrock_client(region: str = ""):
     otherwise falls back to default region.
     """
     bedrock_region = region or os.environ.get("BEDROCK_REGION", "") or _DEFAULT_REGION
-    return boto3.client("bedrock-runtime", region_name=bedrock_region)
+    return boto3.client("bedrock-runtime", region_name=bedrock_region, config=BEDROCK_CLIENT_CONFIG)
+
+
+def parse_json_object(text: str):
+    """Parse the JSON object in a model response, or return None.
+
+    Strips markdown code fences, then takes the span from the first "{" to the
+    last "}". Returns None when there is no well-ordered span; raises
+    json.JSONDecodeError when the span is not valid JSON (e.g. truncated).
+    """
+    if not text:
+        return None
+    if "```" in text:
+        fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+        if fence:
+            text = fence.group(1)
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    return json.loads(text[start:end + 1])
 
 
 def extract_bedrock_text(body: dict):

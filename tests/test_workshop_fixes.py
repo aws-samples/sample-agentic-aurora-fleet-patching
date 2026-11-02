@@ -634,3 +634,166 @@ class TestUiPageRevalidates:
         table.write_stored(_base_state())
         res = TestClient(server.app).get("/api/health")
         assert res.status_code == 200 and "cache-control" not in res.headers
+
+
+class TestBedrockClientTimeout:
+    # Regression from the Sonnet 4.6 run: version-drift (8192 tokens) exceeded
+    # botocore's default 60 s read timeout, so it took ~122 s (timeout + retry)
+    # or failed after ~313 s with "Read timeout on endpoint URL".
+    def test_bedrock_client_allows_long_generations(self):
+        from shared.aws_clients import bedrock_client
+        bedrock_client.cache_clear()
+        try:
+            config = bedrock_client("us-east-2").meta.config
+        finally:
+            bedrock_client.cache_clear()
+        assert config.read_timeout >= 300
+        assert config.connect_timeout == 10
+        # One try plus one retry, so 2 x read_timeout fits the 15-minute API Lambda.
+        assert config.retries == {"total_max_attempts": 2, "mode": "standard"}
+        assert config.retries["total_max_attempts"] * config.read_timeout < 15 * 60
+
+    def test_bedrock_region_behavior_is_unchanged(self, monkeypatch):
+        from shared.aws_clients import bedrock_client
+        monkeypatch.setenv("BEDROCK_REGION", "us-west-2")
+        bedrock_client.cache_clear()
+        try:
+            assert bedrock_client().meta.region_name == "us-west-2"
+            assert bedrock_client("eu-west-1").meta.region_name == "eu-west-1"
+        finally:
+            bedrock_client.cache_clear()
+
+
+def _bedrock_returning(text, calls):
+    client = MagicMock()
+
+    def invoke_model(**kwargs):
+        calls.append(json.loads(kwargs["body"]))
+        body = MagicMock()
+        body.read.return_value = json.dumps({"content": [{"type": "text", "text": text}]}).encode()
+        return {"body": body}
+
+    client.invoke_model.side_effect = invoke_model
+    return client
+
+
+_PLAN = {"status": "plan_ready", "strategy_summary": "dev first", "total_waves": 1,
+         "waves": [{"wave_id": 1, "phase": "dev", "clusters": [
+             {"cluster_id": "orders-dev", "strategy": "in_place", "target_version": "15.19"}]}],
+         "risk_assessment": {"overall_risk": "low", "key_risks": ["none {really}"], "mitigations": []}}
+
+
+class TestPlannerJson:
+    # Regression from the Sonnet 4.6 run: max_tokens 2048 cut the plan JSON
+    # off ("Expecting ',' delimiter"), so /api/agent/plan always returned the
+    # deterministic fallback plan.
+    def _plan(self, monkeypatch, text, calls):
+        import agents.planner.handler as planner
+        monkeypatch.setattr(planner, "bedrock_client", lambda: _bedrock_returning(text, calls))
+        monkeypatch.setattr(planner, "discover_dependencies", lambda candidates, region: {})
+        monkeypatch.setattr(planner, "get_coordination_constraints", lambda graph: [])
+        scan = [{"cluster_id": "orders-dev", "urgency_score": 50, "target_version": "15.19",
+                 "environment": "dev"}]
+        return planner.generate_fleet_plan(scan, [{"cluster_id": "orders-dev", "ready_to_upgrade": True}], {})
+
+    @pytest.mark.parametrize("wrap", [
+        "```json\n{}\n```",
+        "Here is the plan:\n```\n{}\n```\nLet me know if you need changes.",
+        "Plan follows. {} That is all.",
+    ])
+    def test_fenced_or_wrapped_json_is_parsed(self, monkeypatch, wrap):
+        calls = []
+        plan = self._plan(monkeypatch, wrap.replace("{}", json.dumps(_PLAN, indent=2)), calls)
+        assert plan["strategy_summary"] == "dev first"
+        assert "deterministic fallback" not in json.dumps(plan)
+
+    def test_plan_uses_raised_max_tokens(self, monkeypatch):
+        calls = []
+        self._plan(monkeypatch, json.dumps(_PLAN), calls)
+        assert calls[0]["max_tokens"] >= 8192
+
+    def test_truncated_json_still_falls_back(self, monkeypatch):
+        calls = []
+        plan = self._plan(monkeypatch, json.dumps(_PLAN)[:120], calls)
+        assert "deterministic fallback" in json.dumps(plan)
+
+    def test_adjust_parses_fenced_json_with_raised_max_tokens(self, monkeypatch):
+        import agents.planner.handler as planner
+        calls = []
+        reply = "```json\n" + json.dumps({"action": "halt", "reason": "staging failed"}) + "\n```"
+        monkeypatch.setattr(planner, "bedrock_client", lambda: _bedrock_returning(reply, calls))
+        plan = planner.adjust_plan_from_outcome(
+            {"waves": []}, {"wave_id": 1, "results": [{"cluster_id": "inventory-staging", "status": "failed"}]})
+        assert plan["status"] == "halted" and plan["halt_reason"] == "staging failed"
+        assert calls[0]["max_tokens"] >= 8192
+
+
+class TestPlanRunsAsJob:
+    # A complete plan takes ~25-30 s on Sonnet 4.6, over API Gateway's 29 s
+    # limit, so POST /api/agent/plan now dispatches an async job.
+    def _client(self, table, monkeypatch, state):
+        from fastapi.testclient import TestClient
+        table.write_stored(state)
+        monkeypatch.setattr(server, "_ALLOW_UNAUTHENTICATED", True)
+        monkeypatch.setattr(server, "_API_AUTH_TOKEN", "")
+        return TestClient(server.app)
+
+    def test_plan_dispatches_async_job_on_lambda(self, table, monkeypatch):
+        invoked = []
+        fake_lambda = MagicMock()
+        fake_lambda.invoke.side_effect = lambda **kw: invoked.append(kw)
+        monkeypatch.setattr(server, "_LAMBDA_FN_NAME", "aurora-patch-agent-api")
+        monkeypatch.setattr(server.boto3, "client", lambda name, **kw: fake_lambda)
+        monkeypatch.setattr(server, "generate_fleet_plan", lambda **kw: pytest.fail("ran inline"))
+        client = self._client(table, monkeypatch, _base_state(
+            last_urgency_scan={"clusters": [{"cluster_id": "orders-dev"}]}))
+        res = client.post("/api/agent/plan")
+        assert res.status_code == 200, res.text
+        assert res.json()["status"] == "pending"
+        assert len(invoked) == 1 and invoked[0]["InvocationType"] == "Event"
+        job_id = json.loads(invoked[0]["Payload"])["__job__"]
+        assert server._read_job(job_id)["kind"] == "plan"
+
+    def test_plan_job_result_is_pollable_and_stored(self, table, monkeypatch):
+        monkeypatch.setattr(server, "_LAMBDA_FN_NAME", "")  # run the job inline
+        seen = []
+        monkeypatch.setattr(server, "generate_fleet_plan", lambda **kw: seen.append(kw) or dict(_PLAN))
+        client = self._client(table, monkeypatch, _base_state(
+            last_urgency_scan={"clusters": [{"cluster_id": "orders-dev"}]},
+            analyses={"orders-dev": {"cluster_id": "orders-dev", "ready_to_upgrade": True}}))
+        started = client.post("/api/agent/plan").json()
+        assert started.get("job_id") and "waves" not in started
+        job = client.get(f"/api/jobs/{started['job_id']}").json()
+        assert job["status"] == "complete" and job["result"]["strategy_summary"] == "dev first"
+        assert seen[0]["scan_results"] == [{"cluster_id": "orders-dev"}]
+        assert seen[0]["analysis_results"][0]["cluster_id"] == "orders-dev"
+        assert table.stored()["fleet_plan"]["strategy_summary"] == "dev first"
+        assert client.get("/api/agent/plan").json()["strategy_summary"] == "dev first"
+
+    def test_plan_without_scan_is_rejected(self, table, monkeypatch):
+        client = self._client(table, monkeypatch, _base_state())
+        assert client.post("/api/agent/plan").status_code == 400
+
+    def test_adjust_runs_as_job_and_stores_adjusted_plan(self, table, monkeypatch):
+        # Live run: adjusting a full AI plan after a failed wave took 38 s and
+        # API Gateway returned 504, so adjust is a job too.
+        monkeypatch.setattr(server, "_LAMBDA_FN_NAME", "")  # run the job inline
+        seen = []
+
+        def fake_adjust(plan, outcome):
+            seen.append(outcome)
+            return {**plan, "status": "halted", "halt_reason": "staging failed"}
+
+        monkeypatch.setattr(server, "adjust_plan_from_outcome", fake_adjust)
+        client = self._client(table, monkeypatch, _base_state(fleet_plan=dict(_PLAN)))
+        outcome = {"wave_id": 1, "results": [{"cluster_id": "inventory-staging", "status": "failed"}]}
+        started = client.post("/api/agent/plan/adjust", json=outcome).json()
+        assert started.get("job_id") and "waves" not in started
+        job = client.get(f"/api/jobs/{started['job_id']}").json()
+        assert job["status"] == "complete" and job["result"]["status"] == "halted"
+        assert seen == [outcome]
+        assert table.stored()["fleet_plan"]["halt_reason"] == "staging failed"
+
+    def test_adjust_without_plan_is_rejected(self, table, monkeypatch):
+        client = self._client(table, monkeypatch, _base_state())
+        assert client.post("/api/agent/plan/adjust", json={"wave_id": 1, "results": []}).status_code == 400

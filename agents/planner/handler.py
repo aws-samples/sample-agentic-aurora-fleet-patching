@@ -21,7 +21,7 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta
 
-from shared.aws_clients import bedrock_client, extract_bedrock_text
+from shared.aws_clients import bedrock_client, extract_bedrock_text, parse_json_object
 from shared.config import BEDROCK_MODEL_ID
 from agents.planner.dependencies import (
     discover_dependencies,
@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 PLANNER_MODEL = BEDROCK_MODEL_ID
+# Room for a complete multi-wave plan JSON (same budget as analyzer/advisor).
+PLANNER_MAX_TOKENS = 8192
 
 
 def generate_fleet_plan(
@@ -246,14 +248,16 @@ Respond with JSON:
             accept="application/json",
             body=json.dumps({
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 2048,
+                # 2048 truncated the plan JSON on Sonnet 4.6 ("Expecting ','
+                # delimiter"), so every call fell back to the deterministic plan.
+                "max_tokens": PLANNER_MAX_TOKENS,
                 "messages": [{"role": "user", "content": prompt}],
             }),
         )
         body = json.loads(response["body"].read())
-        text = extract_bedrock_text(body)
-        if text and "{" in text:
-            return json.loads(text[text.index("{"):text.rindex("}") + 1])
+        plan = parse_json_object(extract_bedrock_text(body))
+        if plan is not None:
+            return plan
     except Exception as e:
         logger.error(f"Fleet plan generation failed: {e}")
 
@@ -397,15 +401,13 @@ Respond with JSON:
             accept="application/json",
             body=json.dumps({
                 "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 2048,
+                "max_tokens": PLANNER_MAX_TOKENS,
                 "messages": [{"role": "user", "content": prompt}],
             }),
         )
         body = json.loads(response["body"].read())
-        text = extract_bedrock_text(body)
-        if text and "{" in text:
-            adjustment = json.loads(text[text.index("{"):text.rindex("}") + 1])
-
+        adjustment = parse_json_object(extract_bedrock_text(body))
+        if adjustment is not None:
             if adjustment.get("action") == "halt":
                 current_plan["status"] = "halted"
                 current_plan["halt_reason"] = adjustment.get("reason")

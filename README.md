@@ -169,7 +169,7 @@ a custom domain; add an API Gateway custom domain if you need one.
 | Requirement | Notes |
 |---|---|
 | AWS account with Aurora clusters | PostgreSQL and/or MySQL, any version. The agent scans the Region it's deployed in, or the Regions in `scan.regions` / `SCAN_REGIONS` |
-| Amazon Bedrock model access | Anthropic **Claude Sonnet 4.5** enabled in the account. The default model ID is the US cross-Region inference profile (`us.anthropic.claude-sonnet-4-5-20250929-v1:0`), which works only when the agent runs in a US Region; elsewhere set `bedrock.region` / `bedrock.model_id` in `deploy-config.json`. Without model access, scanning still works but every AI feature fails. |
+| Amazon Bedrock model access | Anthropic **Claude Sonnet 4.6** enabled in the account. The default model ID is the US cross-Region inference profile (`us.anthropic.claude-sonnet-4-6`), which works only when the agent runs in a US Region; elsewhere set `bedrock.region` / `bedrock.model_id` in `deploy-config.json`. Without model access, scanning still works but every AI feature fails. |
 | VPC with public subnets | For NAT Gateway placement (Lambda needs internet for Bedrock/NVD API). Pass two public subnets, the first in AZ `<region>a` and the second in `<region>b` (the stack assumes this order), and leave `10.0.200.0/24` and `10.0.201.0/24` free (or set `private_subnet_cidrs`) for the Lambda private subnets the stack creates |
 | Security group | Must allow outbound HTTPS; if connecting to clusters for traffic gen, needs inbound 5432 (PG) or 3306 (MySQL) rule |
 | AWS CLI configured | With permissions for RDS, Lambda, API Gateway, Bedrock, IAM, EC2 |
@@ -558,7 +558,7 @@ The IAM user has read-only access to `pg_catalog` and `information_schema` — s
 - Model-powered recommendations with risk assessment
 
 ### Settings
-- Runtime model selector (Sonnet 4.5 default; the list also shows Sonnet 5 / Sonnet 4.6 / Haiku 4.5 / Opus 4.8). Only pick a model your account has Bedrock access to in the agent's Region; otherwise AI calls fail.
+- Runtime model selector (Sonnet 4.6 default; the list also shows Sonnet 5 / Sonnet 4.5 (legacy) / Haiku 4.5 / Opus 4.8). Only pick a model your account has Bedrock access to in the agent's Region; otherwise AI calls fail.
 
 ## Upgrade Strategies
 
@@ -698,7 +698,7 @@ sample-agentic-aurora-fleet-patching/
 |---|---|
 | UI | React + Vite (served via Lambda static mount) |
 | API | FastAPI + Mangum on Lambda behind API Gateway |
-| AI | Amazon Bedrock — Claude Sonnet 4.5 (default), runtime-selectable |
+| AI | Amazon Bedrock — Claude Sonnet 4.6 (default), runtime-selectable |
 | Compute | Python 3.12 Lambda (VPC-attached, private subnets + NAT) |
 | State | DynamoDB (upgrade history, learned fixes, CVE cache, recommendations) |
 | Databases | Aurora PostgreSQL + Aurora MySQL (any version) |
