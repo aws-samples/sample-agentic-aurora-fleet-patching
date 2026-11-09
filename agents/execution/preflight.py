@@ -46,7 +46,9 @@ def run_preflight_checks(cluster_id: str, region: str, environment: str, dry_run
 
     all_passed = all(c["passed"] for c in checks.values())
 
-    if not all_passed:
+    # Only release a lock this call acquired. A dry run never acquires one, so
+    # releasing here would delete the lock of a real upgrade that is in progress.
+    if not all_passed and not dry_run:
         release_upgrade_lock(cluster_id)
 
     return {

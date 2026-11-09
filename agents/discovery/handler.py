@@ -320,6 +320,9 @@ def _classify_environment(cluster_id: str, tags: dict) -> Environment:
         return Environment.DEV
 
     cluster_lower = cluster_id.lower()
+    # "nonprod" / "non-prod" contain the substring "prod" but are not production.
+    if any(p in cluster_lower for p in ("nonprod", "non-prod", "non_prod", "nonprd", "non-prd")):
+        return Environment.DEV
     if any(p in cluster_lower for p in ("prod", "prd")):
         return Environment.PRODUCTION
     elif any(p in cluster_lower for p in ("staging", "stg", "stage")):

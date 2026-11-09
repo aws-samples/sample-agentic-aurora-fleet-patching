@@ -31,9 +31,19 @@ BEDROCK_CLIENT_CONFIG = Config(
 )
 
 
+# Fail fast when a region's RDS endpoint is unreachable (for example an opt-in
+# region that isn't enabled for the account). With botocore's defaults that case
+# hangs for minutes; with these settings it fails in ~12 s. Read timeout is left
+# at the default because RDS API calls themselves are fast.
+RDS_CLIENT_CONFIG = Config(
+    connect_timeout=5,
+    retries={"total_max_attempts": 3, "mode": "standard"},
+)
+
+
 @lru_cache
 def rds_client(region: str = _DEFAULT_REGION):
-    return boto3.client("rds", region_name=region)
+    return boto3.client("rds", region_name=region, config=RDS_CLIENT_CONFIG)
 
 
 @lru_cache
