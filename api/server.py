@@ -13,6 +13,7 @@ import sys
 import json
 import uuid
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, wait
 import logging
 import boto3
 from pathlib import Path
@@ -601,6 +602,11 @@ async def get_fleet():
     }
 
 
+# Per-scan deadline for the parallel region scan (see scan_fleet). Must stay under
+# API Gateway's 29 s integration timeout.
+_REGION_SCAN_TIMEOUT_SEC = int(os.environ.get("REGION_SCAN_TIMEOUT_SEC", "20"))
+
+
 @app.post("/api/fleet/scan")
 async def scan_fleet(regions: list[str] = None):
     """Trigger a fresh fleet scan across configured regions."""
@@ -610,10 +616,12 @@ async def scan_fleet(regions: list[str] = None):
 
     all_clusters = []
     all_targets = []
+    region_errors = {}
 
-    for region in regions:
-        clusters = discover_clusters(region, "")
-        for c in clusters:
+    def _scan_region(region: str):
+        """Scan one region. Returns (clusters, targets) with the same fields as before."""
+        clusters_out, targets_out = [], []
+        for c in discover_clusters(region, ""):
             serialized = _serialize_cluster(c)
             serialized["region"] = region
             target = find_available_upgrades(c)
@@ -621,12 +629,11 @@ async def scan_fleet(regions: list[str] = None):
                 serialized["upgrade_available"] = True
                 serialized["target_version"] = target.target_version
                 serialized["available_versions"] = target.available_versions
-                all_targets.append(_serialize_target(target))
+                targets_out.append(_serialize_target(target))
             else:
                 serialized["upgrade_available"] = False
                 serialized["target_version"] = None
                 serialized["available_versions"] = []
-
             # Add LTS info
             from agents.scanner.handler import _get_lts_info, _get_recommended_lts
             engine_type = serialized.get("engine_type", "aurora-postgresql")
@@ -637,8 +644,37 @@ async def scan_fleet(regions: list[str] = None):
             serialized["lts_info"] = current_lts
             serialized["target_is_lts"] = target_lts is not None
             serialized["recommended_lts"] = recommended_lts
+            clusters_out.append(serialized)
+        return clusters_out, targets_out
 
-            all_clusters.append(serialized)
+    # Scan regions in parallel under a hard deadline. A region that fails (opt-in
+    # region not enabled, access denied) or doesn't answer in time is reported in
+    # `region_errors` and skipped instead of failing the whole scan. The deadline
+    # is below API Gateway's 29 s limit; a region whose RDS endpoint accepts the
+    # connection but never responds would otherwise hold the request until then.
+    # Results keep the caller's region order.
+    if regions:
+        pool = ThreadPoolExecutor(max_workers=min(len(regions), 8))
+        futures = [(region, pool.submit(_scan_region, region)) for region in regions]
+        wait([f for _, f in futures], timeout=_REGION_SCAN_TIMEOUT_SEC)
+        for region, future in futures:
+            if not future.done():
+                logger.warning(f"Fleet scan skipped region {region}: no response in {_REGION_SCAN_TIMEOUT_SEC}s")
+                region_errors[region] = f"No response within {_REGION_SCAN_TIMEOUT_SEC}s (region not enabled or unreachable?)"
+                continue
+            try:
+                clusters_out, targets_out = future.result()
+                all_clusters.extend(clusters_out)
+                all_targets.extend(targets_out)
+            except Exception as e:
+                logger.warning(f"Fleet scan skipped region {region}: {e}")
+                region_errors[region] = str(e)[:300]
+        # Don't block on stragglers: cancel what hasn't started, let the rest finish on their own.
+        pool.shutdown(wait=False, cancel_futures=True)
+        if len(region_errors) == len(regions):
+            # Every region failed: keep the previously stored fleet rather than
+            # overwriting it with an empty result.
+            raise HTTPException(502, f"Fleet scan failed in all regions: {region_errors}")
 
     _state["clusters"] = all_clusters
     _state["upgrade_targets"] = all_targets
@@ -649,6 +685,7 @@ async def scan_fleet(regions: list[str] = None):
         "clusters": all_clusters,
         "upgrade_targets": all_targets,
         "last_scan": _state["last_scan"],
+        "region_errors": region_errors,
     }
 
 
@@ -705,9 +742,14 @@ async def get_upgrade_status(cluster_id: str):
 
 @app.post("/api/upgrades/preflight")
 async def run_preflight(request: UpgradeRequest):
-    """Run pre-flight checks without starting upgrade."""
+    """Run pre-flight checks without starting upgrade.
+
+    dry_run=True: this endpoint must not change anything. Without it the checks
+    create a real pre-upgrade snapshot and take the upgrade lock, which also made
+    the call exceed API Gateway's 29 s limit (snapshot wait).
+    """
     env = request.environment if not request.skip_window_check else "dev"
-    result = run_preflight_checks(request.cluster_id, request.region, env)
+    result = run_preflight_checks(request.cluster_id, request.region, env, dry_run=True)
     return result
 
 

@@ -107,13 +107,30 @@ cp cdk.json.example cdk.json
 
 pip install -r requirements.txt
 
-# 3. Deploy (scan-only — no DynamoDB/StepFunctions/SNS)
+# 3. Bootstrap CDK once per account and Region (skip if already done)
+cdk bootstrap aws://<account-id>/<region>
+
+# 4. Deploy (scan-only — no DynamoDB/StepFunctions/SNS)
 cdk deploy AuroraPatchAgentUiStack \
   -c vpc_id=vpc-xxx \
   -c subnet_ids=subnet-aaa,subnet-bbb \
   -c security_group_id=sg-xxx \
   -c deploy_infra=false
 ```
+
+> **Using your account's default VPC (`172.31.0.0/16`)?** The stack creates two
+> private subnets for the Lambda function, and their default ranges
+> (`10.0.200.0/24`, `10.0.201.0/24`) are outside the default VPC, so the deploy
+> fails and rolls back. Add `-c private_subnet_cidrs=172.31.200.0/24,172.31.201.0/24`
+> (any two unused ranges inside your VPC's CIDR work). If a first deploy rolled
+> back, delete the failed stack (`aws cloudformation delete-stack`) before you
+> retry.
+>
+> **Scanning other Regions?** By default the agent scans only the Region it's
+> deployed in. Set `scan.regions` in `deploy-config.json` (or the `SCAN_REGIONS`
+> environment variable) to scan more. A Region that can't be reached (for
+> example an opt-in Region that isn't enabled) is skipped and reported in the
+> scan response under `region_errors`.
 
 The output URL ([Your UI URL](#your-ui-url)) gives you the full UI. To scan your fleet, view CVE exposure, analyze version drift, or run upgrades, first set an API token ([API Authentication](#running-upgrades-api-authentication-important)); Blue/Green upgrades also need the opt-in permissions in [Enabling Blue/Green Execution](#enabling-bluegreen-execution-additional-iam-opt-in).
 
@@ -173,9 +190,9 @@ a custom domain; add an API Gateway custom domain if you need one.
 | VPC with public subnets | For NAT Gateway placement (Lambda needs internet for Bedrock/NVD API). Pass two public subnets, the first in AZ `<region>a` and the second in `<region>b` (the stack assumes this order), and leave `10.0.200.0/24` and `10.0.201.0/24` free (or set `private_subnet_cidrs`) for the Lambda private subnets the stack creates |
 | Security group | Must allow outbound HTTPS; if connecting to clusters for traffic gen, needs inbound 5432 (PG) or 3306 (MySQL) rule |
 | AWS CLI configured | With permissions for RDS, Lambda, API Gateway, Bedrock, IAM, EC2 |
-| Node.js 18+ | For UI build |
+| Node.js 18+ (22 or 24 recommended) | For UI build. The CDK CLI warns on other Node versions, such as 26, but still works |
 | Python 3.12+ | For CDK and Lambda |
-| AWS CDK CLI | `npm install -g aws-cdk` |
+| AWS CDK CLI | `npm install -g aws-cdk` (use the latest: `cdk/requirements.txt` pins `aws-cdk-lib`, and an older CLI fails with "Cloud assembly schema version mismatch"). Run `cdk bootstrap` once per account and Region |
 
 ## Running Upgrades: API Authentication (important)
 
